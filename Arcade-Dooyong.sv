@@ -79,6 +79,7 @@ wire [15:0] ioctl_index;
 wire        ioctl_wait;
 
 wire [31:0] joystick_0, joystick_1;
+wire [10:0] ps2_key;
 
 hps_io #(.CONF_STR(CONF_STR)) hps_io (
 	.clk_sys(clk_sys),
@@ -104,8 +105,48 @@ hps_io #(.CONF_STR(CONF_STR)) hps_io (
 	.ioctl_din(8'd0),
 
 	.joystick_0(joystick_0),
-	.joystick_1(joystick_1)
+	.joystick_1(joystick_1),
+	.ps2_key(ps2_key)
 );
+
+// ---------------------------------------------------------------------------
+// keyboard, MAME default keys (ps2_key: [10] toggles per event, [9] pressed,
+// [8] extended, [7:0] set-2 scancode)
+//   P1: arrows, LCtrl = B1, LAlt/Space = B2, 1 = Start, 5 = Coin, 9 = Service
+//   P2: R/F/D/G, A = B1, S = B2, 2 = Start, 6 = Coin
+// ---------------------------------------------------------------------------
+reg k_up, k_dn, k_lt, k_rt, k_b1, k_b2, k_b2b, k_st1, k_co1, k_svc;
+reg k2_up, k2_dn, k2_lt, k2_rt, k2_b1, k2_b2, k_st2, k_co2;
+reg ps2_last = 1'b0;
+always @(posedge clk_sys) begin
+	ps2_last <= ps2_key[10];
+	if (ps2_key[10] != ps2_last) begin
+		case ({ps2_key[8], ps2_key[7:0]})
+			9'h175: k_up  <= ps2_key[9];
+			9'h172: k_dn  <= ps2_key[9];
+			9'h16B: k_lt  <= ps2_key[9];
+			9'h174: k_rt  <= ps2_key[9];
+			9'h014: k_b1  <= ps2_key[9];   // left ctrl
+			9'h011: k_b2  <= ps2_key[9];   // left alt
+			9'h029: k_b2b <= ps2_key[9];   // space
+			9'h016: k_st1 <= ps2_key[9];   // 1
+			9'h01E: k_st2 <= ps2_key[9];   // 2
+			9'h02E: k_co1 <= ps2_key[9];   // 5
+			9'h036: k_co2 <= ps2_key[9];   // 6
+			9'h046: k_svc <= ps2_key[9];   // 9
+			9'h02D: k2_up <= ps2_key[9];   // R
+			9'h02B: k2_dn <= ps2_key[9];   // F
+			9'h023: k2_lt <= ps2_key[9];   // D
+			9'h034: k2_rt <= ps2_key[9];   // G
+			9'h01C: k2_b1 <= ps2_key[9];   // A
+			9'h01B: k2_b2 <= ps2_key[9];   // S
+			default: ;
+		endcase
+	end
+end
+// joystick layout: 0 R, 1 L, 2 D, 3 U, 4 B1, 5 B2, 6 Start, 7 Coin, 8 Service
+wire [8:0] joy0 = joystick_0[8:0] | {k_svc, k_co1, k_st1, k_b2 | k_b2b, k_b1, k_up, k_dn, k_lt, k_rt};
+wire [8:0] joy1 = joystick_1[8:0] | {1'b0, k_co2, k_st2, k2_b2, k2_b1, k2_up, k2_dn, k2_lt, k2_rt};
 
 // ---------------------------------------------------------------------------
 // inputs, active low (spec 9.2). MiSTer joystick: 0 R, 1 L, 2 D, 3 U, then
@@ -114,10 +155,9 @@ hps_io #(.CONF_STR(CONF_STR)) hps_io (
 // 2 Coin2, 3 Start2, 4 Service. (lastday/gulfstrm/pollux use other SYSTEM
 // orders; they are not in this build.)
 // ---------------------------------------------------------------------------
-wire [7:0] p1  = ~{2'b00, joystick_0[5:4], joystick_0[3:0]};
-wire [7:0] p2  = ~{2'b00, joystick_1[5:4], joystick_1[3:0]};
-wire [7:0] sys = ~{3'b000, joystick_0[8] | joystick_1[8],
-                   joystick_1[6], joystick_1[7], joystick_0[6], joystick_0[7]};
+wire [7:0] p1  = ~{2'b00, joy0[5:4], joy0[3:0]};
+wire [7:0] p2  = ~{2'b00, joy1[5:4], joy1[3:0]};
+wire [7:0] sys = ~{3'b000, joy0[8] | joy1[8], joy1[6], joy1[7], joy0[6], joy0[7]};
 
 // ---------------------------------------------------------------------------
 // board
