@@ -1,0 +1,39 @@
+# ROMs are never committed
+roms/
+*.zip
+*.rom
+
+# simulation outputs: region images, SDRAM images, MAME oracle captures
+sim/build/
+sim/mame/out/
+obj_dir/
+*.vcd
+*.fst
+*.o
+*.d
+__pycache__/
+
+# MAME runtime dirs if MAME is ever run from the repo root by hand
+cfg/
+nvram/
+snap/
+sta/
+inp/
+diff/
+
+# Quartus
+output_files/
+db/
+incremental_db/
+*.qws
+*.rpt
+*.summary
+builds/
+
+# local verification artifacts
+reference/*.mp4
+reference/*.webm
+hw_shots/
+
+# macOS
+.DS_Store
