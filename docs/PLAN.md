@@ -10,8 +10,8 @@ real board is suspected to differ from MAME, the difference is logged as
 a research item and resolved only with evidence (recordings, PCB photos,
 measurements), as in Hyper Duel's `docs/ACCURACY.md`.
 
-Status 2026-09-28: M0 complete, gate PASS (`docs/m0_findings.md`). M1 gate
-PASS for flytiger and bluehawk (`docs/m1_findings.md`).
+Status 2026-09-28: M0 complete, gate PASS (`docs/m0_findings.md`). M1 and M2
+gates PASS for flytiger and bluehawk (`docs/m1_findings.md`, `docs/m2_findings.md`).
 ROMs (MAME 0.289 merged set) are in `roms/`; the oracle is MAME 0.288.
 
 ## 1. Scope
@@ -345,6 +345,17 @@ renderer extended first.
 Gate M2: flytiger attract loop matches MAME frame for frame after event
 alignment, zero gate counters, soak of 20,000 frames with zero gate
 counters.
+
+**M2 status (2026-09-28): DONE for flytiger and bluehawk, gate PASS.**
+`cd sim && make m2-boot m2-soak`. Main Z80 (T80) + BRAM program ROM +
+video from power-on through both attract loops: every captured frame is
+either pixel-exact against MAME or pixel-exact against a line-accurate
+model of the core's live text/palette reads (MAME draws the whole frame at
+line 248); video RAM equals MAME's at every compared vblank apart from 5
+one-frame transients; no alignment offset needed; ROM-area write counts
+equal MAME's; 20,000-frame soak with zero overruns. Found and fixed: the
+vblank sprite copy was not an instant snapshot. Sound CPU side moves to M3
+as planned. Details in `docs/m2_findings.md`.
 
 ### M3. Sound
 

@@ -316,8 +316,18 @@ def load_state(frame_dir):
     return d, st
 
 
-def render(frame_dir, regions_set=None):
-    d, st = load_state(frame_dir)
+def render(frame_dir, regions_set=None, override=None):
+    """override: optional dict replacing inputs in memory: "state" (dict),
+    "text.bin", "spriteram_buf.bin", "palette.bin" (bytes). Used by the M2
+    line-accurate check (sim/m2/compare.py)."""
+    ov = override or {}
+    if "state" in ov:
+        d, st = Path(frame_dir), ov["state"]
+    else:
+        d, st = load_state(frame_dir)
+
+    def data(name):
+        return ov[name] if name in ov else (d / name).read_bytes()
     mname = st["machine"]
     mc = MACHINES[mname]
     setname = regions_set or st["set"]
@@ -341,7 +351,7 @@ def render(frame_dir, regions_set=None):
 
     def draw_text(pcode):
         tc = mc["text"]
-        tw = np.frombuffer((d / "text.bin").read_bytes(), dtype=">u2").astype(np.int64)
+        tw = np.frombuffer(data("text.bin"), dtype=">u2").astype(np.int64)
         tbank = st.get("tx.m_palette_bank", [0])[0]
         pens, opq = text_pixmap(setname, tc, tw, tbank)
         ys = tc["yscroll"]
@@ -373,10 +383,10 @@ def render(frame_dir, regions_set=None):
         raise NotImplementedError(mname)
 
     if mc["sprites"] is not None and not (mname == "lastday" and st.get("m_sprites_disabled", [0])[0]):
-        spr = np.frombuffer((d / "spriteram_buf.bin").read_bytes(), dtype=np.uint8).astype(np.int64)
+        spr = np.frombuffer(data("spriteram_buf.bin"), dtype=np.uint8).astype(np.int64)
         draw_z80_sprites(setname, mc["sprites"], spr, bitmap, prio, flip, bank, clip)
 
-    pal = palette_rgb((d / "palette.bin").read_bytes(), mc["palette"], mc["pal_entries"])
+    pal = palette_rgb(data("palette.bin"), mc["palette"], mc["pal_entries"])
     x0, x1, y0, y1 = clip
     return pal[bitmap[y0:y1 + 1, x0:x1 + 1]], bitmap[y0:y1 + 1, x0:x1 + 1]
 

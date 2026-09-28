@@ -24,7 +24,7 @@ module dy_dpram #(
 );
 
 `ifdef VERILATOR
-  logic [DW-1:0] mem [0:NUMWORDS-1];
+  logic [DW-1:0] mem [0:NUMWORDS-1] /* verilator public_flat_rd */;
 
   always_ff @(posedge clk) begin
     if (we_a)

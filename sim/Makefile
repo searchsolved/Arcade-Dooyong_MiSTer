@@ -20,6 +20,13 @@
 #   make m1-extra        RTL vs MAME on the lastday/gulfstrm/pollux samples
 #   make m1-synth        synthetic scenes vs the Python renderer (gate)
 #
+# M2 targets:
+#   make m2-build        build the dy_sys harness (48 MHz sim clock)
+#   make m2-boot         flytiger + bluehawk from power-on through both MAME
+#                        attract captures (8,800 / 9,000 frames, about 35 min
+#                        each, run in parallel), compared with MAME (gate)
+#   make m2-soak         flytiger 20,000 frames, gate counters must stay 0
+#
 # All MAME output lands in mame/out (gitignored). Every run starts from a
 # wiped cfg/nvram directory (mame/run_mame.sh), so captures are reproducible
 # from power-on.
@@ -43,7 +50,7 @@ FLIP_FRAMES := 1-3000/10
 
 EXTRA   := lastday gulfstrm pollux sadari gundl94
 
-.PHONY: m1-build m1-verify m1-extra m1-synth roms-check regions mame-regions oracle oracle-flytiger oracle-bluehawk \
+.PHONY: m2-build m2-boot m2-soak m1-build m1-verify m1-extra m1-synth roms-check regions mame-regions oracle oracle-flytiger oracle-bluehawk \
         oracle-verify oracle-extra survey analyze m0 clean-out
 
 roms-check:
@@ -127,3 +134,33 @@ m1-extra: $(M1BIN)
 m1-synth: $(M1BIN)
 	$(PY) m1/make_scenes.py build/m1/scenes
 	$(PY) m1/replay.py $(wildcard build/m1/scenes/*) --quiet
+
+# ---------------------------------------------------------------- M2
+# The simulation runs the system clock at 48 MHz (CPU /6, pixel 7,864,320 Hz
+# from 48 MHz) with a ROM model of one read per 4 clocks, latency 5; the
+# M1 budget numbers at 48 MHz (m1_findings 4) show this fits.
+M2RTL := ../rtl/vendor/t80/T80s.v $(M1RTL) ../rtl/dy_sys.sv
+M2DIR ?= build/m2/obj_dir
+M2BIN := $(M2DIR)/Vdy_sys
+
+$(M2BIN): $(M2RTL) m2/tb_sys.cpp
+	$(VERILATOR) --cc --exe --build -O3 -Wno-fatal -Wno-lint -Wno-style --x-assign fast --x-initial fast \
+	  --top-module dy_sys --Mdir $(M2DIR) -j 0 \
+	  -GCPU_DIV=6 -GPIX_NUM=786432 -GPIX_DEN=4800000 \
+	  -CFLAGS -O2 $(M2RTL) m2/tb_sys.cpp
+
+m2-build: $(M2BIN)
+
+M2OUT := build/m2/gate
+
+m2-boot: $(M2BIN)
+	m2/run_boot.sh $(M2BIN) flytiger 3 8801 $(M2OUT)/flytiger $(OUT)/flytiger_attract & \
+	m2/run_boot.sh $(M2BIN) bluehawk 4 9001 $(M2OUT)/bluehawk $(OUT)/bluehawk_attract & wait
+	@tail -n 1 $(M2OUT)/flytiger/run.log $(M2OUT)/bluehawk/run.log
+	$(PY) m2/compare.py $(M2OUT)/flytiger $(OUT)/flytiger_attract --quiet
+	$(PY) m2/compare.py $(M2OUT)/bluehawk $(OUT)/bluehawk_attract --quiet
+
+m2-soak: $(M2BIN)
+	mkdir -p $(M2OUT)/soak && : > $(M2OUT)/soak/cap.txt
+	$(M2BIN) +game=3 +sdram=build/regions/flytiger/sdram.bin +frames=20000 \
+	  +cap=$(M2OUT)/soak/cap.txt +out=$(M2OUT)/soak | tail -n 1

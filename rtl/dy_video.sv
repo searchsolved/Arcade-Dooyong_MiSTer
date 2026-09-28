@@ -84,8 +84,8 @@ module dy_video #(
   assign cfg = game_cfg(i_game);
 
   // ================================================================ timing
-  logic [8:0] hcnt;
-  logic [7:0] vcnt;
+  logic [8:0] hcnt /* verilator public_flat_rd */;
+  logic [7:0] vcnt /* verilator public_flat_rd */;
   always_ff @(posedge clk) begin
     if (!rst_n) begin
       hcnt <= '0;
@@ -156,13 +156,29 @@ module dy_video #(
   assign o_pal_dout = pal_lane_q ? pal_q[15:8] : pal_q[7:0];
   assign o_txt_dout = txt_lane_q ? txt_q[15:8] : txt_q[7:0];
 
-  // live sprite RAM 4096 x 8 (CPU) and the draw buffer 1024 x 32
-  logic [11:0] cp_raddr;
-  logic [7:0]  cp_q;
-  dy_dpram #(.AW(12), .DW(8)) u_spr_live (
+  // live sprite RAM and the draw buffer, both 1024 x 32 (word w = bytes
+  // 4w..4w+3, [31:24] = byte 4w)
+  //
+  // The vblank copy must equal an instant snapshot of the live RAM at the
+  // start of line 248, as MAME's BUFFERED_SPRITERAM8 (spec 10.1): the
+  // vblank handler starts writing sprite RAM within the copy time (seen at
+  // flytiger vblank 7408, m2_findings). So CPU writes to the live RAM are
+  // delayed two clocks, and a write during the copy to a word not yet
+  // copied first saves that word's old value into the buffer (the copy
+  // engine gives up its read port for that clock and skips the word later).
+  logic [9:0]  cp_raddr;
+  logic [31:0] cp_q, live_qa;
+  logic        lw_we [2];
+  logic [11:0] lw_a  [2];
+  logic [7:0]  lw_d  [2];
+  logic [1:0]  spr_lane_q;
+  dy_dpram #(.AW(10), .DW(32)) u_spr_live (
     .clk(clk),
-    .addr_a(i_cpu_addr), .d_a(i_cpu_din), .we_a(i_spr_we), .be_a(1'b1), .q_a(o_spr_dout),
+    .addr_a(lw_we[1] ? lw_a[1][11:2] : i_cpu_addr[11:2]), .d_a({4{lw_d[1]}}), .we_a(lw_we[1]),
+    .be_a(4'b1000 >> lw_a[1][1:0]), .q_a(live_qa),
     .addr_b(cp_raddr), .q_b(cp_q));
+  always_ff @(posedge clk) spr_lane_q <= i_cpu_addr[1:0];
+  assign o_spr_dout = live_qa[8 * (3 - spr_lane_q) +: 8];
 
   logic        cp_we;
   logic [9:0]  cp_waddr;
@@ -174,34 +190,56 @@ module dy_video #(
     .addr_a(cp_waddr), .d_a(cp_word), .we_a(cp_we), .be_a(4'hF), .q_a(sb_qa_unused),
     .addr_b(sb_raddr), .q_b(sb_q));
 
-  // vblank copy: 4096 byte reads, packed big-endian into words
-  logic        cp_run, cp_dv;
-  logic [11:0] cp_i, cp_d;
-  logic [23:0] cp_acc;
-  assign cp_raddr = cp_i;
+  logic        snap;                   // snapshot window: vblank start to copy end
+  logic [1:0]  cp_wait;
+  logic [10:0] cp_i;                   // next word to copy (1024 = done)
+  logic [1023:0] copied;
+  logic        rd_v;                   // a live word read is on cp_q this clock
+  logic [9:0]  rd_w;
+  wire  [9:0]  wr_w  = i_cpu_addr[11:2];
+  wire         save  = i_spr_we && snap && !copied[wr_w];
+  wire         eng   = snap && cp_wait == 2'd0 && !cp_i[10] && !save;
+  assign cp_raddr = save ? wr_w : cp_i[9:0];
+
   always_ff @(posedge clk) begin
     if (!rst_n) begin
-      cp_run <= 1'b0;
-      cp_dv  <= 1'b0;
+      snap   <= 1'b0;
+      rd_v   <= 1'b0;
       cp_we  <= 1'b0;
+      lw_we  <= '{1'b0, 1'b0};
     end else begin
-      cp_we <= 1'b0;
-      cp_dv <= cp_run;
-      cp_d  <= cp_i;
+      // delayed CPU writes to the live RAM
+      lw_we[0] <= i_spr_we;
+      lw_a[0]  <= i_cpu_addr;
+      lw_d[0]  <= i_cpu_din;
+      lw_we[1] <= lw_we[0];
+      lw_a[1]  <= lw_a[0];
+      lw_d[1]  <= lw_d[0];
+      // buffer writes one clock after each live read
+      cp_we    <= rd_v;
+      cp_waddr <= rd_w;
+      cp_word  <= cp_q;
+      rd_v     <= 1'b0;
       if (vbl_start) begin
-        cp_run <= 1'b1;
-        cp_i   <= 12'd0;
-      end else if (cp_run) begin
-        cp_i <= cp_i + 12'd1;
-        if (cp_i == 12'hFFF) cp_run <= 1'b0;
-      end
-      if (cp_dv) begin
-        cp_acc <= {cp_acc[15:0], cp_q};
-        if (cp_d[1:0] == 2'd3) begin
-          cp_we    <= 1'b1;
-          cp_waddr <= cp_d[11:2];
-          cp_word  <= {cp_acc, cp_q};
+        snap    <= 1'b1;
+        cp_wait <= 2'd2;               // let writes issued before vblank land
+        cp_i    <= '0;
+        copied  <= '0;
+      end else if (snap) begin
+        if (cp_wait != 2'd0) cp_wait <= cp_wait - 2'd1;
+        if (save) begin
+          rd_v   <= 1'b1;
+          rd_w   <= wr_w;
+          copied[wr_w] <= 1'b1;
+        end else if (eng) begin
+          if (!copied[cp_i[9:0]]) begin
+            rd_v <= 1'b1;
+            rd_w <= cp_i[9:0];
+            copied[cp_i[9:0]] <= 1'b1;
+          end
+          cp_i <= cp_i + 11'd1;
         end
+        if (cp_i[10] && !rd_v && !cp_we) snap <= 1'b0;
       end
     end
   end
