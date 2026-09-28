@@ -96,13 +96,13 @@ The output line double buffer was declared with 768 entries but indexed
 Only frames with content there showed it (flytiger frame 1 of the canary,
 7,633 pixels). Fixed by sizing the array to 1,024.
 
-## 6. Decision needed before M2: sprite / scroll frame pairing
+## 6. Sprite / scroll frame pairing
 
 MAME draws frame N at line 248 from the registers at that moment and from
 the sprite buffer copied at the previous vblank, then copies the live sprite
 RAM (spec 5.3, 10.1). So each MAME frame pairs regs(N) with sprites(N-1).
 
-The RTL as built latches the registers at line 248 (the PLAN M1 rule,
+The first M1 build latched the registers at line 248 (the PLAN M1 rule,
 `LATCH_LINE` parameter) and copies the sprite list at line 248, then shows
 both during the next active period: regs(N) with sprites(N). The M1 replay
 cannot see this because it loads the dumped buffer directly. In M2, a
@@ -125,6 +125,14 @@ Recommendation: A for the Z80 games (no added latency, exact on bluehawk),
 decided per family with the M2 comparison; the 68000 games need the R12
 evidence either way. `LATCH_LINE` is already a parameter; A is a one-line
 change.
+
+**Decided 2026-09-28: A.** `LATCH_LINE` now defaults to 7, and the line
+render starts one clock after the line start so the latch taken on line 7's
+start is what line 8 is drawn from. Re-run after the change: m1-verify
+3,875/3,875, m1-extra 900/900, m1-synth 408/408, no overruns. The M2
+frame-by-frame comparison with MAME is where the pairing itself gets
+tested (the M1 replay holds registers constant across the frame, so it
+cannot tell 7 from 248). The 68000 games revisit this with R12.
 
 ## 7. Notes for M4 (synthesis)
 

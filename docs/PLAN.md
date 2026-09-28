@@ -321,9 +321,9 @@ engine; no separate `dy_timing` / `dy_mix` / `dy_palette` modules, those
 live in `dy_video.sv`). 3,875/3,875 flytiger and bluehawk frames
 pixel-exact against MAME; 408/408 synthetic scenes against the Python
 renderer; lastday, gulfstrm, pollux 300/300 each against MAME. Worst line
-4,305 of 6,144 clocks at 96 MHz with a pessimistic ROM port. Open: the
-sprite/scroll frame pairing decision (latch at line 7 or a second sprite
-buffer), `docs/m1_findings.md` section 6. Not yet done: primella family
+4,305 of 6,144 clocks at 96 MHz with a pessimistic ROM port. Registers
+latch at line 7 (end of vblank) for MAME's sprite/scroll pairing,
+`docs/m1_findings.md` section 6. Not yet done: primella family
 (no sprites, text priority, 256 visible lines) and the 68000 video
 (`dy_spr_68k`, 16x16 layers, colour ROM), which also need the Python
 renderer extended first.

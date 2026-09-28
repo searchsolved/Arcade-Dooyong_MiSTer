@@ -8,10 +8,15 @@
 // enable, visible x 64-447, y 8-247, vblank IRQ at line 248. Real totals are
 // an M4 decision (research item R1).
 //
-// Register latch (spec 5.4, m0_findings 7.1): tilemap registers and the
-// video control bits are copied at the start of line LATCH_LINE and the
-// following active lines are drawn from that copy. The sprite list is
-// copied into the draw buffer at line 248 (BUFFERED_SPRITERAM8, spec 10.1).
+// Register latch (spec 5.4, m0_findings 7.1, m1_findings 6): tilemap
+// registers and the video control bits are copied at the start of line
+// LATCH_LINE and the following active lines are drawn from that copy. The
+// sprite list is copied into the draw buffer at line 248
+// (BUFFERED_SPRITERAM8, spec 10.1). With the default latch at line 7 (end of
+// vblank) the active period after vblank N shows the registers as the
+// vblank handler left them with the sprite list copied at vblank N, which
+// is MAME's frame N+1 whenever the game writes the registers only during
+// vblank; writes during the active lines take effect from the next frame.
 //
 // Per line L (rendered during line L-1 into one half of a double buffer):
 //   1. tilemap passes in the game's order (spec 11), each setting its
@@ -24,7 +29,7 @@
 // Scan-out reads the finished line and the palette at the pixel enable.
 
 module dy_video #(
-    parameter int LATCH_LINE = 248
+    parameter int LATCH_LINE = 7
 ) (
     input  logic        clk,
     input  logic        rst_n,
@@ -344,6 +349,10 @@ module dy_video #(
                         : r2_lv ? {1'b1, r2_lpen} : 12'd0;
 
   wire line_ok = (vcnt >= 8'd7) && (vcnt <= 8'd246);
+  // render start one clock after the line start, so a latch on that line
+  // start is visible to everything the renderer reads
+  logic go;
+  always_ff @(posedge clk) go <= rst_n && line_start && line_ok;
 
   always_ff @(posedge clk) begin
     if (!rst_n) begin
@@ -359,11 +368,11 @@ module dy_video #(
       sp_start <= 1'b0;
       if (sp_done) sp_fin <= 1'b1;
       if (rs != R_IDLE) rcyc <= rcyc + 16'd1;
-      if (line_start && line_ok) begin
+      if (go) begin
         if (rs != R_IDLE) o_dbg_overruns <= o_dbg_overruns + 16'd1;
       end
       case (rs)
-        R_IDLE: if (line_start && line_ok) begin
+        R_IDLE: if (go) begin
           rline    <= vcnt + 8'd1;
           pi       <= 3'd0;
           rcyc     <= 16'd0;
