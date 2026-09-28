@@ -10,7 +10,8 @@ real board is suspected to differ from MAME, the difference is logged as
 a research item and resolved only with evidence (recordings, PCB photos,
 measurements), as in Hyper Duel's `docs/ACCURACY.md`.
 
-Status 2026-09-27: M0 complete, gate PASS (details in `docs/m0_findings.md`).
+Status 2026-09-28: M0 complete, gate PASS (`docs/m0_findings.md`). M1 gate
+PASS for flytiger and bluehawk (`docs/m1_findings.md`).
 ROMs (MAME 0.289 merged set) are in `roms/`; the oracle is MAME 0.288.
 
 ## 1. Scope
@@ -312,6 +313,20 @@ palette bank 0).
 Gate M1: pixel-exact on all captured flytiger and bluehawk frames, and
 on synthetic scenes covering every per-game flag in spec 10-11. Other
 variants get the same gate when they are brought up.
+
+**M1 status (2026-09-28): DONE for the Z80 family except primella, gate
+PASS.** `cd sim && make m1-verify m1-synth` reproduces it. RTL in
+`rtl/dy_*.sv` (one pass module for ROM layers and text, one Z80 sprite
+engine; no separate `dy_timing` / `dy_mix` / `dy_palette` modules, those
+live in `dy_video.sv`). 3,875/3,875 flytiger and bluehawk frames
+pixel-exact against MAME; 408/408 synthetic scenes against the Python
+renderer; lastday, gulfstrm, pollux 300/300 each against MAME. Worst line
+4,305 of 6,144 clocks at 96 MHz with a pessimistic ROM port. Open: the
+sprite/scroll frame pairing decision (latch at line 7 or a second sprite
+buffer), `docs/m1_findings.md` section 6. Not yet done: primella family
+(no sprites, text priority, 256 visible lines) and the 68000 video
+(`dy_spr_68k`, 16x16 layers, colour ROM), which also need the Python
+renderer extended first.
 
 ### M2. Full-system boot in Verilator
 

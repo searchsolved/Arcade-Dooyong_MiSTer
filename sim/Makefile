@@ -14,6 +14,12 @@
 #   make analyze         map ROM analysis (O1) + write-log summaries
 #   make m0              everything above, in order
 #
+# M1 targets (Verilator; needs `make regions` and the oracle captures):
+#   make m1-build        build the dy_video frame-replay harness
+#   make m1-verify       RTL vs MAME on every flytiger/bluehawk capture (gate)
+#   make m1-extra        RTL vs MAME on the lastday/gulfstrm/pollux samples
+#   make m1-synth        synthetic scenes vs the Python renderer (gate)
+#
 # All MAME output lands in mame/out (gitignored). Every run starts from a
 # wiped cfg/nvram directory (mame/run_mame.sh), so captures are reproducible
 # from power-on.
@@ -37,7 +43,7 @@ FLIP_FRAMES := 1-3000/10
 
 EXTRA   := lastday gulfstrm pollux sadari gundl94
 
-.PHONY: roms-check regions mame-regions oracle oracle-flytiger oracle-bluehawk \
+.PHONY: m1-build m1-verify m1-extra m1-synth roms-check regions mame-regions oracle oracle-flytiger oracle-bluehawk \
         oracle-verify oracle-extra survey analyze m0 clean-out
 
 roms-check:
@@ -96,3 +102,28 @@ m0: roms-check mame-regions oracle oracle-verify survey analyze
 
 clean-out:
 	rm -rf $(OUT) build
+
+# ---------------------------------------------------------------- M1
+VERILATOR ?= verilator
+M1RTL := ../rtl/dy_pkg.sv ../rtl/dy_dpram.sv ../rtl/dy_layer_pass.sv ../rtl/dy_spr_z80.sv ../rtl/dy_video.sv
+M1BIN := build/m1/obj_dir/Vdy_video
+M1RUNS := $(OUT)/flytiger_attract $(OUT)/flytiger_flip $(OUT)/bluehawk_attract $(OUT)/bluehawk_flip
+
+$(M1BIN): $(M1RTL) m1/tb_video.cpp
+	$(VERILATOR) --cc --exe --build -O3 -Wall -Wno-UNUSEDSIGNAL -Wno-UNUSEDPARAM -Wno-WIDTHEXPAND \
+	  --top-module dy_video --Mdir build/m1/obj_dir -j 0 \
+	  -CFLAGS -O2 $(M1RTL) m1/tb_video.cpp
+
+m1-build: $(M1BIN)
+
+m1-verify: $(M1BIN)
+	$(PY) m1/replay.py $(M1RUNS) --quiet
+
+# primella family (sadari, gundl94) not in the M1 RTL yet
+M1EXTRA := lastday gulfstrm pollux
+m1-extra: $(M1BIN)
+	$(PY) m1/replay.py $(addprefix $(OUT)/extra_,$(M1EXTRA)) --quiet
+
+m1-synth: $(M1BIN)
+	$(PY) m1/make_scenes.py build/m1/scenes
+	$(PY) m1/replay.py $(wildcard build/m1/scenes/*) --quiet

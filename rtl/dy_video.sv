@@ -1,0 +1,462 @@
+// Dooyong Z80-family video (PLAN M1): timing, register latch, video RAMs,
+// scanline renderer and scan-out.
+//
+// Reference model: sim/oracle/dy_render.py, which is pixel-exact against
+// MAME 0.288 on every M0 capture. Spec sections cited as "spec N".
+//
+// Geometry is MAME's parity frame (spec 5.3): 512 x 256 at the pixel
+// enable, visible x 64-447, y 8-247, vblank IRQ at line 248. Real totals are
+// an M4 decision (research item R1).
+//
+// Register latch (spec 5.4, m0_findings 7.1): tilemap registers and the
+// video control bits are copied at the start of line LATCH_LINE and the
+// following active lines are drawn from that copy. The sprite list is
+// copied into the draw buffer at line 248 (BUFFERED_SPRITERAM8, spec 10.1).
+//
+// Per line L (rendered during line L-1 into one half of a double buffer):
+//   1. tilemap passes in the game's order (spec 11), each setting its
+//      priority bit where opaque and overwriting the pen; in parallel the
+//      sprite engine (dy_spr_z80) fills its own line buffer,
+//   2. resolve: sprite pen where the sprite owns the pixel and is not
+//      masked, else the layer pen, else the black pen; clears the buffers.
+// The pass and the sprite engine share the graphics ROM port through a
+// round-robin arbiter; the port is pipelined and returns data in order.
+// Scan-out reads the finished line and the palette at the pixel enable.
+
+module dy_video #(
+    parameter int LATCH_LINE = 248
+) (
+    input  logic        clk,
+    input  logic        rst_n,
+    input  logic        ce_pix,
+    input  logic [3:0]  i_game,
+
+    // CPU side, already decoded by the system (M2); byte wide
+    input  logic [11:0] i_cpu_addr,
+    input  logic [7:0]  i_cpu_din,
+    input  logic        i_pal_we,       // palette byte address (bank applied by the decoder)
+    input  logic        i_txt_we,       // text RAM CPU offset (layout per game, spec 8)
+    input  logic        i_spr_we,       // live sprite RAM
+    output logic [7:0]  o_pal_dout,
+    output logic [7:0]  o_txt_dout,
+    output logic [7:0]  o_spr_dout,
+    input  logic        i_tm_we,
+    input  logic [1:0]  i_tm_layer,     // 0 bg0, 1 fg0, 2 fg1
+    input  logic [2:0]  i_tm_reg,
+    input  logic [7:0]  i_tm_din,
+    input  logic        i_flip,
+    input  logic        i_pal_bank,
+    input  logic        i_pri_swap,     // flytiger ctrl bit 4
+    input  logic        i_spr_disable,  // lastday ctrl bit 4
+
+    // graphics ROM port: accepted when o_rom_req && i_rom_gnt; i_rom_rv
+    // returns accepted requests in order ([31:24] = byte at o_rom_addr)
+    output logic        o_rom_req,
+    output logic [22:0] o_rom_addr,
+    input  logic        i_rom_gnt,
+    input  logic        i_rom_rv,
+    input  logic [31:0] i_rom_data,
+
+    // video
+    output logic [7:0]  o_r,
+    output logic [7:0]  o_g,
+    output logic [7:0]  o_b,
+    output logic        o_de,
+    output logic        o_hblank,
+    output logic        o_vblank,
+    output logic        o_hs,
+    output logic        o_vs,
+    output logic [11:0] o_pen,          // {black, pen} with the pixel (sim/debug)
+    output logic        o_vbl_irq,      // one clk at the start of line 248
+
+    // always-on gate counters (PLAN M2)
+    output logic [15:0] o_dbg_overruns,
+    output logic [15:0] o_dbg_maxcyc
+);
+
+  import dy_pkg::*;
+  cfg_t cfg;
+  assign cfg = game_cfg(i_game);
+
+  // ================================================================ timing
+  logic [8:0] hcnt;
+  logic [7:0] vcnt;
+  always_ff @(posedge clk) begin
+    if (!rst_n) begin
+      hcnt <= '0;
+      vcnt <= '0;
+    end else if (ce_pix) begin
+      hcnt <= hcnt + 9'd1;
+      if (hcnt == 9'd511) vcnt <= vcnt + 8'd1;
+    end
+  end
+  wire line_start = ce_pix && hcnt == 9'd0;
+  wire vbl_start  = line_start && vcnt == 8'd248;
+  wire latch_now  = line_start && vcnt == 8'(LATCH_LINE);
+  assign o_vbl_irq = vbl_start;
+
+  // ================================================================ registers
+  logic [7:0] tm_live [3][8];
+  logic [7:0] tm_l    [3][8];
+  logic       flip_l, bank_l, pri_l, sdis_l;
+
+  always_ff @(posedge clk) begin
+    if (!rst_n) begin
+      for (int l = 0; l < 3; l++)
+        for (int r = 0; r < 8; r++) begin
+          tm_live[l][r] <= 8'd0;
+          tm_l[l][r]    <= 8'd0;
+        end
+      {flip_l, bank_l, pri_l, sdis_l} <= '0;
+    end else begin
+      // a write only takes effect on change (spec 7.2); storing the value
+      // is equivalent here because this renderer has no tile cache
+      if (i_tm_we && i_tm_layer != 2'd3) tm_live[i_tm_layer][i_tm_reg] <= i_tm_din;
+      if (latch_now) begin
+        tm_l   <= tm_live;
+        flip_l <= i_flip;
+        bank_l <= i_pal_bank;
+        pri_l  <= i_pri_swap;
+        sdis_l <= i_spr_disable;
+      end
+    end
+  end
+
+  // ================================================================ RAMs
+  // palette: 2048 x 16, CPU bytes little-endian (spec 6)
+  logic [10:0] pal_vaddr;
+  logic [15:0] pal_q, pal_vq;
+  logic        pal_lane_q, txt_lane_q;
+  dy_dpram #(.AW(11), .DW(16)) u_pal (
+    .clk(clk),
+    .addr_a(i_cpu_addr[11:1]), .d_a({i_cpu_din, i_cpu_din}), .we_a(i_pal_we),
+    .be_a(i_cpu_addr[0] ? 2'b10 : 2'b01), .q_a(pal_q),
+    .addr_b(pal_vaddr), .q_b(pal_vq));
+
+  // text: 2048 x 16 logical entries; CPU lane per layout (spec 8)
+  wire [10:0] txt_caddr = cfg.tx_lane0 ? i_cpu_addr[11:1] : i_cpu_addr[10:0];
+  wire        txt_clane = cfg.tx_lane0 ? i_cpu_addr[0]    : i_cpu_addr[11];
+  logic [10:0] txt_vaddr;
+  logic [15:0] txt_q, txt_vq;
+  dy_dpram #(.AW(11), .DW(16)) u_txt (
+    .clk(clk),
+    .addr_a(txt_caddr), .d_a({i_cpu_din, i_cpu_din}), .we_a(i_txt_we),
+    .be_a(txt_clane ? 2'b10 : 2'b01), .q_a(txt_q),
+    .addr_b(txt_vaddr), .q_b(txt_vq));
+
+  always_ff @(posedge clk) begin
+    pal_lane_q <= i_cpu_addr[0];
+    txt_lane_q <= txt_clane;
+  end
+  assign o_pal_dout = pal_lane_q ? pal_q[15:8] : pal_q[7:0];
+  assign o_txt_dout = txt_lane_q ? txt_q[15:8] : txt_q[7:0];
+
+  // live sprite RAM 4096 x 8 (CPU) and the draw buffer 1024 x 32
+  logic [11:0] cp_raddr;
+  logic [7:0]  cp_q;
+  dy_dpram #(.AW(12), .DW(8)) u_spr_live (
+    .clk(clk),
+    .addr_a(i_cpu_addr), .d_a(i_cpu_din), .we_a(i_spr_we), .be_a(1'b1), .q_a(o_spr_dout),
+    .addr_b(cp_raddr), .q_b(cp_q));
+
+  logic        cp_we;
+  logic [9:0]  cp_waddr;
+  logic [31:0] cp_word;
+  logic [9:0]  sb_raddr;
+  logic [31:0] sb_q, sb_qa_unused;
+  dy_dpram #(.AW(10), .DW(32)) u_spr_buf (
+    .clk(clk),
+    .addr_a(cp_waddr), .d_a(cp_word), .we_a(cp_we), .be_a(4'hF), .q_a(sb_qa_unused),
+    .addr_b(sb_raddr), .q_b(sb_q));
+
+  // vblank copy: 4096 byte reads, packed big-endian into words
+  logic        cp_run, cp_dv;
+  logic [11:0] cp_i, cp_d;
+  logic [23:0] cp_acc;
+  assign cp_raddr = cp_i;
+  always_ff @(posedge clk) begin
+    if (!rst_n) begin
+      cp_run <= 1'b0;
+      cp_dv  <= 1'b0;
+      cp_we  <= 1'b0;
+    end else begin
+      cp_we <= 1'b0;
+      cp_dv <= cp_run;
+      cp_d  <= cp_i;
+      if (vbl_start) begin
+        cp_run <= 1'b1;
+        cp_i   <= 12'd0;
+      end else if (cp_run) begin
+        cp_i <= cp_i + 12'd1;
+        if (cp_i == 12'hFFF) cp_run <= 1'b0;
+      end
+      if (cp_dv) begin
+        cp_acc <= {cp_acc[15:0], cp_q};
+        if (cp_d[1:0] == 2'd3) begin
+          cp_we    <= 1'b1;
+          cp_waddr <= cp_d[11:2];
+          cp_word  <= {cp_acc, cp_q};
+        end
+      end
+    end
+  end
+
+  // ================================================================ line buffers
+  logic [383:0] lvalid, lp0, lp1, lp2;
+  logic [10:0]  lpen [384];
+  logic [11:0]  obuf [1024];           // {valid, pen}; index {parity, x}, x < 384
+
+  // ================================================================ renderer
+  typedef enum logic [2:0] {R_IDLE, R_PASS, R_PASS_WAIT, R_SPR_WAIT, R_RES, R_RES_END} rstate_t;
+  rstate_t     rs;
+  logic [7:0]  rline;
+  logic [2:0]  pi;                     // pass index
+  logic [15:0] rcyc;
+
+  // pass list (spec 11): source 0 bg0, 1 fg0, 2 fg1, 3 text; bit = priority bit
+  logic [1:0] p_src [4];
+  logic [1:0] p_bit [4];
+  logic [2:0] p_n;
+  always_comb begin
+    p_src = '{2'd0, 2'd1, 2'd3, 2'd3};
+    p_bit = '{2'd0, 2'd1, 2'd2, 2'd2};
+    p_n   = 3'd3;
+    if (i_game == G_FLYTIGER && pri_l) begin
+      p_src = '{2'd1, 2'd0, 2'd3, 2'd3};
+    end else if (i_game == G_BLUEHAWK) begin
+      p_src = '{2'd0, 2'd1, 2'd2, 2'd3};
+      p_n   = 3'd4;
+    end
+  end
+
+  wire [1:0]       cur_src = p_src[pi[1:0]];
+  wire             cur_txt = (cur_src == 2'd3);
+  layer_cfg_t      cur_lc;
+  always_comb begin
+    case (cur_src)
+      2'd0:    cur_lc = cfg.bg0;
+      2'd1:    cur_lc = cfg.fg0;
+      default: cur_lc = cfg.fg1;
+    endcase
+  end
+  wire [1:0] lidx    = cur_txt ? 2'd0 : cur_src;
+  wire [7:0] cur_r6  = tm_l[lidx][6];
+  wire       cur_off = !cur_txt && (!cur_lc.present || cur_r6[4]);
+
+  logic        lp_start, lp_done, lp_req, lp_we;
+  logic [22:0] lp_addr;
+  logic [8:0]  lp_x;
+  logic [10:0] lp_pen;
+  logic        sp_start, sp_done, sp_req, sp_fin;
+  logic        lp_gnt, sp_gnt, lp_rv, sp_rv;
+  logic [22:0] sp_addr;
+  logic        rs_en;
+  logic [8:0]  rs_x;
+  logic        rs_occ, rs_cls;
+  logic [10:0] rs_pen;
+  logic [1:0]  wbit;
+
+  dy_layer_pass u_pass (
+    .clk(clk), .rst_n(rst_n),
+    .i_start(lp_start), .i_text(cur_txt), .i_line(rline), .i_flip(flip_l), .i_bank(bank_l),
+    .i_gfx_base(cur_lc.gfx_base), .i_tile_mask(cur_lc.tile_mask),
+    .i_map_base(cur_lc.map_base), .i_map_mask(cur_lc.map_mask),
+    .i_opaque(cur_lc.opaque), .i_cbase(cur_lc.cbase),
+    .i_reg0(tm_l[lidx][0]), .i_reg1(tm_l[lidx][1]), .i_reg3(tm_l[lidx][3]),
+    .i_fmt_a(cur_r6[5]),
+    .i_tx_packed(cfg.tx_packed), .i_tx_base(SD_TX), .i_tx_half(cfg.tx_half),
+    .i_tx_mask(cfg.tx_mask), .i_tx_yscroll(flip_l ? 8'(-cfg.tx_yscroll) : cfg.tx_yscroll),
+    .o_rom_req(lp_req), .o_rom_addr(lp_addr),
+    .i_rom_gnt(lp_gnt), .i_rom_rv(lp_rv), .i_rom_data(i_rom_data),
+    .o_txt_addr(txt_vaddr), .i_txt_data(txt_vq),
+    .o_lb_we(lp_we), .o_lb_x(lp_x), .o_lb_pen(lp_pen), .o_done(lp_done));
+
+  dy_spr_z80 u_spr (
+    .clk(clk), .rst_n(rst_n),
+    .i_start(sp_start), .i_line(rline), .i_flip(flip_l), .i_bank(bank_l),
+    .i_code_mask(cfg.spr_mask), .i_f12(cfg.spr_12bit), .i_fheight(cfg.spr_height),
+    .i_ysh_ft(cfg.spr_ysh_ft), .i_ysh_bh(cfg.spr_ysh_bh),
+    .o_buf_addr(sb_raddr), .i_buf_data(sb_q),
+    .o_rom_req(sp_req), .o_rom_addr(sp_addr),
+    .i_rom_gnt(sp_gnt), .i_rom_rv(sp_rv), .i_rom_data(i_rom_data),
+    .o_done(sp_done),
+    .i_rs_en(rs_en), .i_rs_x(rs_x), .o_rs_occ(rs_occ), .o_rs_cls(rs_cls), .o_rs_pen(rs_pen));
+
+  // arbiter: alternate when both request; a FIFO of owner IDs routes the
+  // in-order responses back
+  logic        last_sp;
+  logic [31:0] own;                    // owner bit per in-flight request (1 = sprite)
+  logic [4:0]  own_wp, own_rp;
+  wire         pick_sp = sp_req && (!lp_req || !last_sp);
+  assign o_rom_req  = lp_req || sp_req;
+  assign o_rom_addr = pick_sp ? sp_addr : lp_addr;
+  assign lp_gnt     = i_rom_gnt && !pick_sp;
+  assign sp_gnt     = i_rom_gnt && pick_sp;
+  assign lp_rv      = i_rom_rv && !own[own_rp];
+  assign sp_rv      = i_rom_rv && own[own_rp];
+  always_ff @(posedge clk) begin
+    if (!rst_n) begin
+      last_sp <= 1'b0;
+      own_wp  <= '0;
+      own_rp  <= '0;
+    end else begin
+      if (o_rom_req && i_rom_gnt) begin
+        own[own_wp] <= pick_sp;
+        own_wp      <= own_wp + 5'd1;
+        last_sp     <= pick_sp;
+      end
+      if (i_rom_rv) own_rp <= own_rp + 5'd1;
+    end
+  end
+
+  // layer pass writes
+  always_ff @(posedge clk) begin
+    if (!rst_n) begin
+      lvalid <= '0;
+      lp0 <= '0;
+      lp1 <= '0;
+      lp2 <= '0;
+    end else begin
+      if (lp_we) begin
+        lvalid[lp_x] <= 1'b1;
+        lpen[lp_x]   <= lp_pen;
+        case (wbit)
+          2'd0:    lp0[lp_x] <= 1'b1;
+          2'd1:    lp1[lp_x] <= 1'b1;
+          default: lp2[lp_x] <= 1'b1;
+        endcase
+      end
+      if (rs_en) begin
+        lvalid[rs_x] <= 1'b0;
+        lp0[rs_x] <= 1'b0;
+        lp1[rs_x] <= 1'b0;
+        lp2[rs_x] <= 1'b0;
+      end
+    end
+  end
+
+  // resolve stage 2 (registered reads of stage 1)
+  logic        r2_v, r2_lv, r2_p1, r2_p2;
+  logic [10:0] r2_lpen;
+  logic [8:0]  r2_x;
+  wire         blocked = rs_cls ? (r2_p1 || r2_p2) : r2_p2;
+  wire [11:0]  r2_out  = (rs_occ && !blocked) ? {1'b1, rs_pen}
+                        : r2_lv ? {1'b1, r2_lpen} : 12'd0;
+
+  wire line_ok = (vcnt >= 8'd7) && (vcnt <= 8'd246);
+
+  always_ff @(posedge clk) begin
+    if (!rst_n) begin
+      rs             <= R_IDLE;
+      lp_start       <= 1'b0;
+      sp_start       <= 1'b0;
+      rs_en          <= 1'b0;
+      r2_v           <= 1'b0;
+      o_dbg_overruns <= '0;
+      o_dbg_maxcyc   <= '0;
+    end else begin
+      lp_start <= 1'b0;
+      sp_start <= 1'b0;
+      if (sp_done) sp_fin <= 1'b1;
+      if (rs != R_IDLE) rcyc <= rcyc + 16'd1;
+      if (line_start && line_ok) begin
+        if (rs != R_IDLE) o_dbg_overruns <= o_dbg_overruns + 16'd1;
+      end
+      case (rs)
+        R_IDLE: if (line_start && line_ok) begin
+          rline    <= vcnt + 8'd1;
+          pi       <= 3'd0;
+          rcyc     <= 16'd0;
+          rs       <= R_PASS;
+          // lastday ctrl bit 4 suppresses the sprite pass (spec 10.1)
+          sp_start <= !(sdis_l && i_game == G_LASTDAY);
+          sp_fin   <= sdis_l && i_game == G_LASTDAY;
+        end
+        R_PASS: begin
+          if (pi == p_n) begin
+            rs   <= R_SPR_WAIT;
+            rs_x <= 9'd0;
+          end else if (cur_off) begin
+            pi <= pi + 3'd1;
+          end else begin
+            lp_start <= 1'b1;
+            wbit     <= p_bit[pi[1:0]];
+            rs       <= R_PASS_WAIT;
+          end
+        end
+        R_PASS_WAIT: if (lp_done) begin
+          pi <= pi + 3'd1;
+          rs <= R_PASS;
+        end
+        R_SPR_WAIT: if (sp_fin || sp_done) rs <= R_RES;
+        R_RES: begin
+          rs_en <= 1'b1;
+          if (rs_en) rs_x <= rs_x + 9'd1;
+          if (rs_en && rs_x == 9'd383) begin
+            rs_en <= 1'b0;
+            rs    <= R_RES_END;
+          end
+        end
+        R_RES_END: if (!r2_v) begin
+          rs <= R_IDLE;
+          if (rcyc > o_dbg_maxcyc) o_dbg_maxcyc <= rcyc;
+        end
+        default: rs <= R_IDLE;
+      endcase
+
+      // resolve pipeline: stage 1 is rs_en with rs_x (reads registered here
+      // and inside u_spr), stage 2 writes the output line
+      r2_v <= rs_en;
+      if (rs_en) begin
+        r2_x    <= rs_x;
+        r2_lv   <= lvalid[rs_x];
+        r2_lpen <= lpen[rs_x];
+        r2_p1   <= lp1[rs_x];
+        r2_p2   <= lp2[rs_x];
+      end
+      if (r2_v) obuf[{rline[0], r2_x}] <= r2_out;
+    end
+  end
+
+  // ================================================================ scan-out
+  // ce k: out-buffer read; ce k+1: palette read; ce k+2: RGB out
+  logic        s1_de, s2_de;
+  logic        s1_hb, s1_vb, s2_hb, s2_vb, s1_hs, s1_vs, s2_hs, s2_vs;
+  logic [11:0] s1_px, s2_px;
+  wire         h_act = (hcnt >= 9'd64) && (hcnt <= 9'd447);
+  wire         v_act = (vcnt >= 8'd8) && (vcnt <= 8'd247);
+  wire [8:0]   ox    = 9'(hcnt - 9'd64);
+
+  function automatic logic [23:0] to_rgb(logic [15:0] w, logic is444);
+    if (is444) return {w[3:0], w[3:0], w[7:4], w[7:4], w[11:8], w[11:8]};
+    else       return {w[14:10], w[14:12], w[9:5], w[9:7], w[4:0], w[4:2]};
+  endfunction
+
+  always_ff @(posedge clk) begin
+    if (ce_pix) begin
+      s1_de <= h_act && v_act;
+      s1_hb <= !h_act;
+      s1_vb <= !v_act;
+      s1_hs <= (hcnt >= 9'd464) && (hcnt < 9'd496);
+      s1_vs <= (vcnt >= 8'd250) && (vcnt < 8'd253);
+      s1_px <= (h_act && v_act) ? obuf[{vcnt[0], ox}] : 12'd0;
+      s2_de <= s1_de;
+      s2_hb <= s1_hb;
+      s2_vb <= s1_vb;
+      s2_hs <= s1_hs;
+      s2_vs <= s1_vs;
+      s2_px <= s1_px;
+      pal_vaddr <= s1_px[10:0];
+      o_de     <= s2_de;
+      o_hblank <= s2_hb;
+      o_vblank <= s2_vb;
+      o_hs     <= s2_hs;
+      o_vs     <= s2_vs;
+      o_pen    <= {!s2_px[11], s2_px[10:0]};
+      {o_r, o_g, o_b} <= (s2_de && s2_px[11]) ? to_rgb(pal_vq, cfg.pal_444) : 24'd0;
+    end
+  end
+
+  wire unused = &{1'b0, sb_qa_unused, rs_x[8], cfg.tx_lane0};
+
+endmodule
