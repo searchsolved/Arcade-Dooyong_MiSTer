@@ -407,6 +407,12 @@ Gate M4: STA clean on all clocks, fit report recorded (ALM, M10K), MRA
 download-order test in sim (`make download` equivalent), 2,200-frame
 SDRAM-model soak with hardware DIP settings and zero gate counters.
 
+**M4 status (2026-09-28): gate PASS for flytiger/bluehawk, first RBF
+deployed.** Compile 3 meets timing on every clock (core 96 MHz +0.802 ns);
+43% ALMs, 291/553 RAM blocks; MRAs verified byte-exact; board sim through
+the MRA stream + SDRAM model matches MAME; 2,200-frame hardware-timing soak
+clean. Details in `docs/m4_findings.md`.
+
 ### M5. Hardware and MRAs
 
 - Find the MiSTer by subnet scan (DHCP), deploy RBF + MRAs.

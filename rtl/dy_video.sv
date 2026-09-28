@@ -29,7 +29,12 @@
 // Scan-out reads the finished line and the palette at the pixel enable.
 
 module dy_video #(
-    parameter int LATCH_LINE = 7
+    parameter int LATCH_LINE = 7,
+    // lines per frame: 256 = MAME's parity frame (sim, with the 60 Hz
+    // fractional pixel enable); hardware uses 260 at an exact 8 MHz pixel
+    // clock = 60.10 Hz (spec 5.3: PCB 15.68 kHz / 60 Hz suggests ~261; R1).
+    // The extra lines are added after line 255, inside vblank.
+    parameter int V_TOTAL = 256
 ) (
     input  logic        clk,
     input  logic        rst_n,
@@ -85,19 +90,22 @@ module dy_video #(
 
   // ================================================================ timing
   logic [8:0] hcnt /* verilator public_flat_rd */;
+  logic [8:0] vfull;                   // 0 .. V_TOTAL-1
   logic [7:0] vcnt /* verilator public_flat_rd */;
+  assign vcnt = vfull[7:0];
+  wire        vextra = vfull[8];          // lines 256.. (vblank only)
   always_ff @(posedge clk) begin
     if (!rst_n) begin
-      hcnt <= '0;
-      vcnt <= '0;
+      hcnt  <= '0;
+      vfull <= '0;
     end else if (ce_pix) begin
       hcnt <= hcnt + 9'd1;
-      if (hcnt == 9'd511) vcnt <= vcnt + 8'd1;
+      if (hcnt == 9'd511) vfull <= (vfull == 9'(V_TOTAL - 1)) ? 9'd0 : vfull + 9'd1;
     end
   end
   wire line_start = ce_pix && hcnt == 9'd0;
-  wire vbl_start  = line_start && vcnt == 8'd248;
-  wire latch_now  = line_start && vcnt == 8'(LATCH_LINE);
+  wire vbl_start  = line_start && !vextra && vcnt == 8'd248;
+  wire latch_now  = line_start && !vextra && vcnt == 8'(LATCH_LINE);
   assign o_vbl_irq = vbl_start;
 
   // ================================================================ registers
@@ -162,20 +170,26 @@ module dy_video #(
   // The vblank copy must equal an instant snapshot of the live RAM at the
   // start of line 248, as MAME's BUFFERED_SPRITERAM8 (spec 10.1): the
   // vblank handler starts writing sprite RAM within the copy time (seen at
-  // flytiger vblank 7408, m2_findings). So CPU writes to the live RAM are
-  // delayed two clocks, and a write during the copy to a word not yet
-  // copied first saves that word's old value into the buffer (the copy
-  // engine gives up its read port for that clock and skips the word later).
+  // flytiger vblank 7408, m2_findings). A CPU write during the copy to a
+  // word not yet copied first saves that word's old value into the buffer
+  // (the copy engine gives up its read port for that clock and skips the
+  // word later). Pipelined for 96 MHz timing (m4 STA): the write is
+  // registered (p1), the word's copied bit looked up (p2), the save
+  // decided and the old word read (p2 clock), and the live RAM written at
+  // p3. The CPU's next access is at least 6 clocks away, so the delay is
+  // invisible to it.
   logic [9:0]  cp_raddr;
   logic [31:0] cp_q, live_qa;
-  logic        lw_we [2];
-  logic [11:0] lw_a  [2];
-  logic [7:0]  lw_d  [2];
+  logic        p1_we, p2_we, p3_we, p1_sn, p2_sn;
+  logic [11:0] p1_a, p2_a, p3_a;
+  logic [7:0]  p1_d, p2_d, p3_d;
+  logic        p2_cb_w;                // p2's word already copied by the engine
+  wire         p2_cb = p2_cb_w || mk_cq;             // ... or already saved
   logic [1:0]  spr_lane_q;
   dy_dpram #(.AW(10), .DW(32)) u_spr_live (
     .clk(clk),
-    .addr_a(lw_we[1] ? lw_a[1][11:2] : i_cpu_addr[11:2]), .d_a({4{lw_d[1]}}), .we_a(lw_we[1]),
-    .be_a(4'b1000 >> lw_a[1][1:0]), .q_a(live_qa),
+    .addr_a(p3_we ? p3_a[11:2] : i_cpu_addr[11:2]), .d_a({4{p3_d}}), .we_a(p3_we),
+    .be_a(4'b1000 >> p3_a[1:0]), .q_a(live_qa),
     .addr_b(cp_raddr), .q_b(cp_q));
   always_ff @(posedge clk) spr_lane_q <= i_cpu_addr[1:0];
   assign o_spr_dout = live_qa[8 * (3 - spr_lane_q) +: 8];
@@ -190,54 +204,73 @@ module dy_video #(
     .addr_a(cp_waddr), .d_a(cp_word), .we_a(cp_we), .be_a(4'hF), .q_a(sb_qa_unused),
     .addr_b(sb_raddr), .q_b(sb_q));
 
+  // "saved during this copy" bitmap, cleared at vblank. A CPU write needs a
+  // save if its word is at or beyond the copy counter and not already
+  // saved; the engine drops its copy of a word that was saved. Both
+  // lookups are registered one clock ahead of their use (m4 STA: the
+  // unregistered lookup-and-decide was the failing path).
   logic        snap;                   // snapshot window: vblank start to copy end
-  logic [1:0]  cp_wait;
+  logic [2:0]  cp_wait;
   logic [10:0] cp_i;                   // next word to copy (1024 = done)
-  logic [1023:0] copied;
-  logic        rd_v;                   // a live word read is on cp_q this clock
+  logic [1023:0] saved;
+  logic        mk_cq, mk_eq;
+  logic        rd_v, rd_eng;           // live word on cp_q this clock; from the engine
   logic [9:0]  rd_w;
-  wire  [9:0]  wr_w  = i_cpu_addr[11:2];
-  wire         save  = i_spr_we && snap && !copied[wr_w];
-  wire         eng   = snap && cp_wait == 2'd0 && !cp_i[10] && !save;
-  assign cp_raddr = save ? wr_w : cp_i[9:0];
+  wire  [9:0]  sv_w  = p2_a[11:2];
+  wire         save  = p2_we && p2_sn && !p2_cb;
+  wire         eng   = snap && cp_wait == 3'd0 && !cp_i[10] && !save;
+  assign cp_raddr = save ? sv_w : cp_i[9:0];
+  always_ff @(posedge clk) begin
+    if (vbl_start)  saved <= '0;
+    else if (save)  saved[sv_w] <= 1'b1;
+    mk_cq <= saved[p1_a[11:2]];
+    mk_eq <= saved[cp_i[9:0]];
+  end
 
   always_ff @(posedge clk) begin
     if (!rst_n) begin
       snap   <= 1'b0;
       rd_v   <= 1'b0;
+      rd_eng <= 1'b0;
       cp_we  <= 1'b0;
-      lw_we  <= '{1'b0, 1'b0};
+      p1_we  <= 1'b0;
+      p2_we  <= 1'b0;
+      p3_we  <= 1'b0;
     end else begin
-      // delayed CPU writes to the live RAM
-      lw_we[0] <= i_spr_we;
-      lw_a[0]  <= i_cpu_addr;
-      lw_d[0]  <= i_cpu_din;
-      lw_we[1] <= lw_we[0];
-      lw_a[1]  <= lw_a[0];
-      lw_d[1]  <= lw_d[0];
-      // buffer writes one clock after each live read
-      cp_we    <= rd_v;
+      // CPU write pipeline
+      p1_we <= i_spr_we;
+      p1_a  <= i_cpu_addr;
+      p1_d  <= i_cpu_din;
+      p1_sn <= snap;                   // issued inside the snapshot window
+      p2_we <= p1_we;
+      p2_a  <= p1_a;
+      p2_d  <= p1_d;
+      p2_sn <= p1_sn;
+      p2_cb_w <= p1_a[11:2] < cp_i[9:0] || cp_i[10];   // engine already past it
+      p3_we <= p2_we;
+      p3_a  <= p2_a;
+      p3_d  <= p2_d;
+      // buffer writes one clock after each live read; an engine read is
+      // dropped if its word was saved (mk_eq, read in the same clock)
+      cp_we    <= rd_v && !(rd_eng && mk_eq);
       cp_waddr <= rd_w;
       cp_word  <= cp_q;
       rd_v     <= 1'b0;
+      rd_eng   <= 1'b0;
       if (vbl_start) begin
         snap    <= 1'b1;
-        cp_wait <= 2'd2;               // let writes issued before vblank land
+        cp_wait <= 3'd4;               // let writes issued before vblank land
         cp_i    <= '0;
-        copied  <= '0;
       end else if (snap) begin
-        if (cp_wait != 2'd0) cp_wait <= cp_wait - 2'd1;
+        if (cp_wait != 3'd0) cp_wait <= cp_wait - 3'd1;
         if (save) begin
           rd_v   <= 1'b1;
-          rd_w   <= wr_w;
-          copied[wr_w] <= 1'b1;
+          rd_w   <= sv_w;
         end else if (eng) begin
-          if (!copied[cp_i[9:0]]) begin
-            rd_v <= 1'b1;
-            rd_w <= cp_i[9:0];
-            copied[cp_i[9:0]] <= 1'b1;
-          end
-          cp_i <= cp_i + 11'd1;
+          rd_v   <= 1'b1;
+          rd_eng <= 1'b1;
+          rd_w   <= cp_i[9:0];
+          cp_i   <= cp_i + 11'd1;
         end
         if (cp_i[10] && !rd_v && !cp_we) snap <= 1'b0;
       end
@@ -386,7 +419,7 @@ module dy_video #(
   wire [11:0]  r2_out  = (rs_occ && !blocked) ? {1'b1, rs_pen}
                         : r2_lv ? {1'b1, r2_lpen} : 12'd0;
 
-  wire line_ok = (vcnt >= 8'd7) && (vcnt <= 8'd246);
+  wire line_ok = !vextra && (vcnt >= 8'd7) && (vcnt <= 8'd246);
   // render start one clock after the line start, so a latch on that line
   // start is visible to everything the renderer reads
   logic go;
@@ -469,9 +502,10 @@ module dy_video #(
   // ce k: out-buffer read; ce k+1: palette read; ce k+2: RGB out
   logic        s1_de, s2_de;
   logic        s1_hb, s1_vb, s2_hb, s2_vb, s1_hs, s1_vs, s2_hs, s2_vs;
-  logic [11:0] s1_px, s2_px;
+  logic [11:0] s1_raw, s2_px;
+  wire  [11:0] s1_px = s1_de ? s1_raw : 12'd0;
   wire         h_act = (hcnt >= 9'd64) && (hcnt <= 9'd447);
-  wire         v_act = (vcnt >= 8'd8) && (vcnt <= 8'd247);
+  wire         v_act = !vextra && (vcnt >= 8'd8) && (vcnt <= 8'd247);
   wire [8:0]   ox    = 9'(hcnt - 9'd64);
 
   function automatic logic [23:0] to_rgb(logic [15:0] w, logic is444);
@@ -486,7 +520,7 @@ module dy_video #(
       s1_vb <= !v_act;
       s1_hs <= (hcnt >= 9'd464) && (hcnt < 9'd496);
       s1_vs <= (vcnt >= 8'd250) && (vcnt < 8'd253);
-      s1_px <= (h_act && v_act) ? obuf[{vcnt[0], ox}] : 12'd0;
+      s1_raw <= obuf[{vcnt[0], ox}];   // unconditional: lets the buffer be a RAM
       s2_de <= s1_de;
       s2_hb <= s1_hb;
       s2_vb <= s1_vb;

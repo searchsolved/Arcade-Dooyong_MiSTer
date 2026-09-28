@@ -9,7 +9,9 @@
 // fractional divider: PIX_NUM / PIX_DEN of the clock. MAME's parity frame
 // is 512 x 256 at 60 Hz = 7,864,320 pixels per second (spec 5.3), which
 // keeps the CPU/video cycle ratio identical to MAME's for M2 comparisons.
-// The shipped geometry is an M4 decision (R1).
+// Hardware (M4): PIX_NUM/PIX_DEN = 1/12 (exact 8 MHz at 96 MHz) and
+// V_TOTAL = 260 (60.10 Hz); the MAME parity values stay the defaults for
+// simulation. Real totals remain research item R1.
 //
 // Program ROM is in BRAM (zero wait states, as MAME's Z80 has none; no
 // SDRAM arbitration with the renderer). Loaded through the download port.
@@ -19,6 +21,7 @@
 module dy_sys #(
     parameter int CPU_DIV = 12,
     parameter int CLK_HZ  = 96000000,
+    parameter int V_TOTAL = 256,           // dy_video lines per frame
     parameter int PIX_NUM = 786432,        // 7,864,320 / 10
     parameter int PIX_DEN = 9600000        // 96,000,000 / 10
 ) (
@@ -62,6 +65,7 @@ module dy_sys #(
     output logic        o_vs,
     output logic [11:0] o_pen,
     output logic        o_vbl_irq,
+    output logic        o_ce_pix,
 
     // to the sound side (M3)
     output logic [7:0]  o_snd_latch,
@@ -278,7 +282,7 @@ module dy_sys #(
   wire [11:0] v_addr   = (sel == D_PAL) ? pal_a : A[11:0];
   logic [7:0] pal_q, txt_q, spr_q;
 
-  dy_video u_video (
+  dy_video #(.V_TOTAL(V_TOTAL)) u_video (
     .clk(clk), .rst_n(rst_n), .ce_pix(ce_pix), .i_game(i_game),
     .i_cpu_addr(v_addr), .i_cpu_din(cpu_dout),
     .i_pal_we(v_pal_we), .i_txt_we(v_txt_we), .i_spr_we(v_spr_we),
@@ -292,6 +296,7 @@ module dy_sys #(
     .o_pen(o_pen), .o_vbl_irq(vbl_irq),
     .o_dbg_overruns(o_dbg_overruns), .o_dbg_maxcyc(o_dbg_maxcyc));
   assign o_vbl_irq = vbl_irq;
+  assign o_ce_pix  = ce_pix;
 
   // ================================================================ read mux
   // registered every clock; RAM outputs are one clock behind the address,

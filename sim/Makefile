@@ -32,6 +32,11 @@
 #   make m3              7,300 frames of each game (about 1 h, in parallel),
 #                        register streams and mix level compared with MAME
 #
+# M4 targets (board: dy_board = dy_sys + dy_sdram, SDRAM model, ioctl download):
+#   make m4-mra          generate the MRAs and prove each rebuilds sdram.bin
+#   make m4-build        build the board harness (96 MHz, MAME parity timing)
+#   make m4-boot         flytiger via the MRA stream + SDRAM, compared with MAME
+#
 # All MAME output lands in mame/out (gitignored). Every run starts from a
 # wiped cfg/nvram directory (mame/run_mame.sh), so captures are reproducible
 # from power-on.
@@ -55,7 +60,7 @@ FLIP_FRAMES := 1-3000/10
 
 EXTRA   := lastday gulfstrm pollux sadari gundl94
 
-.PHONY: m3 m3-wav m2-build m2-boot m2-soak m1-build m1-verify m1-extra m1-synth roms-check regions mame-regions oracle oracle-flytiger oracle-bluehawk \
+.PHONY: m4-mra m4-build m4-boot m3 m3-wav m2-build m2-boot m2-soak m1-build m1-verify m1-extra m1-synth roms-check regions mame-regions oracle oracle-flytiger oracle-bluehawk \
         oracle-verify oracle-extra survey analyze m0 clean-out
 
 roms-check:
@@ -192,3 +197,23 @@ m3: $(M2BIN)
 	-$(PY) m3/compare_snd.py $(M3OUT)/bluehawk/snd.txt $(OUT)/bluehawk_attract --frames $(M3FRAMES)
 	$(PY) m3/compare_audio.py $(M3OUT)/flytiger/audio.raw $(OUT)/m3wav_flytiger.wav
 	$(PY) m3/compare_audio.py $(M3OUT)/bluehawk/audio.raw $(OUT)/m3wav_bluehawk.wav
+
+# ---------------------------------------------------------------- M4
+M4RTL := $(M2RTL) ../rtl/dy_sdram.sv ../rtl/dy_board.sv m4/sdram_model.sv m4/tb_board.sv
+M4DIR ?= build/m4/obj_dir
+M4BIN := $(M4DIR)/Vtb_board
+
+m4-mra:
+	$(PY) ../tools/make_mra.py
+
+$(M4BIN): $(M4RTL) m4/tb_board.cpp
+	$(VERILATOR) --cc --exe --build -O3 -Wno-fatal -Wno-lint -Wno-style --x-assign fast --x-initial fast \
+	  --top-module tb_board --Mdir $(M4DIR) -j 0 -I../rtl/vendor/jt51/hdl $(M4GEN) \
+	  -CFLAGS -O2 $(M4RTL) m4/tb_board.cpp
+
+m4-build: $(M4BIN)
+
+m4-boot: $(M4BIN)
+	m2/run_boot.sh $(M4BIN) flytiger 3 1201 build/m4/boot_flytiger $(OUT)/flytiger_attract
+	@tail -n 1 build/m4/boot_flytiger/run.log
+	$(PY) m2/compare.py build/m4/boot_flytiger $(OUT)/flytiger_attract --quiet

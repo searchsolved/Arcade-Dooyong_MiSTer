@@ -1,0 +1,43 @@
+# Dooyong core file list, sourced by Arcade-Dooyong.qsf. Paths relative to
+# the project directory. Only real .qip files (QIP_FILE) may use
+# $::quartus(qip_path).
+
+# core RTL
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/dy_pkg.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/dy_dpram.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/dy_layer_pass.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/dy_spr_z80.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/dy_video.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/dy_snd.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/dy_sys.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/dy_sdram.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/dy_board.sv
+
+# T80 (VHDL for synthesis; T80s.v is the Verilator translation, not used here)
+set_global_assignment -name VHDL_FILE rtl/vendor/t80/T80_Reg.vhd
+set_global_assignment -name VHDL_FILE rtl/vendor/t80/T80_MCode.vhd
+set_global_assignment -name VHDL_FILE rtl/vendor/t80/T80_ALU.vhd
+set_global_assignment -name VHDL_FILE rtl/vendor/t80/T80.vhd
+set_global_assignment -name VHDL_FILE rtl/vendor/t80/T80s.vhd
+
+# jt51 (YM2151) via its own qip
+set_global_assignment -name QIP_FILE rtl/vendor/jt51/hdl/jt51.qip
+
+# jt6295 (OKI M6295), INTERPOL=0, listed explicitly as in Hyper Duel
+set_global_assignment -name VERILOG_FILE rtl/vendor/jt6295/hdl/jt6295.v
+set_global_assignment -name VERILOG_FILE rtl/vendor/jt6295/hdl/jt6295_adpcm.v
+set_global_assignment -name VERILOG_FILE rtl/vendor/jt6295/hdl/jt6295_timing.v
+set_global_assignment -name VERILOG_FILE rtl/vendor/jt6295/hdl/jt6295_acc.v
+set_global_assignment -name VERILOG_FILE rtl/vendor/jt6295/hdl/jt6295_ctrl.v
+set_global_assignment -name VERILOG_FILE rtl/vendor/jt6295/hdl/jt6295_rom.v
+set_global_assignment -name VERILOG_FILE rtl/vendor/jt6295/hdl/jt6295_serial.v
+set_global_assignment -name VERILOG_FILE rtl/vendor/jt6295/hdl/jt6295_sh_rst.v
+set_global_assignment -name SEARCH_PATH rtl/vendor/jt6295/hdl
+
+# core PLL: 96 MHz system + 96 MHz -90 degrees for SDRAM_CLK
+set_global_assignment -name VERILOG_FILE pll.v
+set_global_assignment -name VERILOG_FILE pll/pll_0002.v
+
+# shell
+set_global_assignment -name SDC_FILE Arcade-Dooyong.sdc
+set_global_assignment -name SYSTEMVERILOG_FILE Arcade-Dooyong.sv

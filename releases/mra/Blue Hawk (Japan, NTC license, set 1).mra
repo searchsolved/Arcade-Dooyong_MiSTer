@@ -1,0 +1,51 @@
+<misterromdescription>
+    <name>Blue Hawk (Japan, NTC license, set 1)</name>
+    <setname>bluehawkn</setname>
+    <rbf>Dooyong</rbf>
+    <mameversion>0289</mameversion>
+    <year>1993</year>
+    <manufacturer>Dooyong (NTC license)</manufacturer>
+    <players>2</players>
+    <joystick>8-way</joystick>
+    <rotation>vertical (ccw)</rotation>
+    <switches default="FF,FF">
+        <dip name="Service Mode" bits="0" ids="On,Off" />
+        <dip name="Coin Type" bits="1" ids="B,A" />
+        <dip name="Demo Sounds" bits="2" ids="Off,On" />
+        <dip name="Flip Screen" bits="3" ids="On,Off" />
+        <dip name="Coin A" bits="4,5" ids="2C/3C,2C/1C,1C/2C,1C/1C" />
+        <dip name="Coin B" bits="6,7" ids="2C/3C,2C/1C,1C/2C,1C/1C" />
+        <dip name="Lives" bits="8,9" ids="1,4,2,3" />
+        <dip name="Difficulty" bits="10,11" ids="Hardest,Hard,Easy,Normal" />
+        <dip name="Allow Continue" bits="15" ids="No,Yes" />
+    </switches>
+    <buttons names="Button 1,Button 2,Start,Coin,Service" default="A,B,Start,Select,L" />
+    <rom index="1">
+        <part>04</part>
+    </rom>
+    <rom index="0" zip="bluehawkn.zip|bluehawk.zip" md5="none">
+        <part name="rom19" crc="24149246" offset="0x0" length="0x20000" />
+        <part repeat="0x20000">00</part>
+        <part name="rom1" crc="eef22920" offset="0x0" length="0x10000" />
+        <part name="rom3ntc" crc="31eb221a" offset="0x0" length="0x10000" />
+        <part repeat="0x20000">00</part>
+        <part name="rom4" crc="f7318919" offset="0x0" length="0x20000" />
+        <part repeat="0xA0000">00</part>
+        <interleave output="16">
+            <part name="dy-bh-m3" crc="8809d157" offset="0x0" length="0x80000" map="12" />
+        </interleave>
+        <part repeat="0x180000">00</part>
+        <interleave output="16">
+            <part name="dy-bh-m1" crc="51816b2c" offset="0x0" length="0x80000" map="12" />
+        </interleave>
+        <part repeat="0x180000">00</part>
+        <interleave output="16">
+            <part name="dy-bh-m2" crc="f9daace6" offset="0x0" length="0x80000" map="12" />
+        </interleave>
+        <part repeat="0x80000">00</part>
+        <interleave output="16">
+            <part name="rom6" crc="e6bd9daa" offset="0x0" length="0x20000" map="01" />
+            <part name="rom5" crc="5c654dc6" offset="0x0" length="0x20000" map="10" />
+        </interleave>
+    </rom>
+</misterromdescription>

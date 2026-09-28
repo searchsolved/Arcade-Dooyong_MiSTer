@@ -135,15 +135,22 @@ module dy_spr_z80 (
   assign hq_pop = f_acc && f_half;
 
   // ---------------------------------------------------------------- draw
+  // The head record is latched into registers when its draw starts (the
+  // record queue may be a RAM block), then two pipeline stages: A computes
+  // two pixels' pen, x and visibility, B checks and sets the owner bits
+  // and writes the line buffer (m4 STA). B handles pixels strictly in
+  // order, so first-drawn-wins is unchanged.
   logic        drawing;
   logic [3:0]  di;                        // even pixel index 0,2,..,14
   wire [HW-1:0] dr   = rq[rq_rp];
-  wire signed [10:0] dsx = dr[32:22];
-  wire         dfx  = dr[21];
-  wire         dcls = dr[20];
-  wire [3:0]   dcol = dr[19:16];
-  wire [31:0]  dg0  = rq_g0[rq_rp];
-  wire [31:0]  dg1  = rq_g1[rq_rp];
+  logic signed [10:0] dsx;
+  logic        dfx, dcls;
+  logic [3:0]  dcol;
+  logic [31:0] dg0, dg1;
+  logic        sa_v  [2];                 // stage A -> B
+  logic [8:0]  sa_bx [2];
+  logic [11:0] sa_pen [2];
+  logic        sa_act;
 
   function automatic logic [3:0] spix(logic [31:0] a, logic [31:0] b, logic [3:0] t);
     logic [31:0] w;
@@ -186,6 +193,7 @@ module dy_spr_z80 (
       rq_ready <= '0;
       f_half   <= 1'b0;
       drawing  <= 1'b0;
+      sa_act   <= 1'b0;
       o_done   <= 1'b0;
       occ      <= '0;
     end else begin
@@ -222,25 +230,37 @@ module dy_spr_z80 (
         rs_half <= !rs_half;
       end
 
-      // draw
+      // draw: latch the head record, then stage A
+      sa_act <= drawing;
+      for (int j = 0; j < 2; j++) sa_v[j] <= 1'b0;
       if (!drawing && rq_ready != 3'd0) begin
         drawing <= 1'b1;
         di      <= 4'd0;
+        dsx     <= dr[32:22];
+        dfx     <= dr[21];
+        dcls    <= dr[20];
+        dcol    <= dr[19:16];
+        dg0     <= rq_g0[rq_rp];
+        dg1     <= rq_g1[rq_rp];
+        rq_rp   <= rq_rp + 2'd1;
       end else if (drawing) begin
         for (int j = 0; j < 2; j++) begin
-          if (pin[j] && !occ[pbx[j]]) begin
-            occ[pbx[j]] <= 1'b1;
-            if (pbx[j][0]) lbo[pbx[j][8:1]] <= {dcls, dpen + 11'(pp[j])};
-            else           lbe[pbx[j][8:1]] <= {dcls, dpen + 11'(pp[j])};
-          end
+          sa_v[j]   <= pin[j];
+          sa_bx[j]  <= pbx[j];
+          sa_pen[j] <= {dcls, dpen + 11'(pp[j])};
         end
         di <= di + 4'd2;
-        if (di == 4'd14) begin
-          drawing <= 1'b0;
-          rq_rp   <= rq_rp + 2'd1;
+        if (di == 4'd14) drawing <= 1'b0;
+      end
+      // stage B
+      for (int j = 0; j < 2; j++) begin
+        if (sa_v[j] && !occ[sa_bx[j]]) begin
+          occ[sa_bx[j]] <= 1'b1;
+          if (sa_bx[j][0]) lbo[sa_bx[j][8:1]] <= sa_pen[j];
+          else             lbe[sa_bx[j][8:1]] <= sa_pen[j];
         end
       end
-      rq_cnt   <= rq_cnt + 3'(f_acc && !f_half) - 3'(drawing && di == 4'd14);
+      rq_cnt   <= rq_cnt + 3'(f_acc && !f_half) - 3'(!drawing && rq_ready != 3'd0);
       rq_ready <= rq_ready + 3'(i_rom_rv && rs_half) - 3'(!drawing && rq_ready != 3'd0);
 
       if (i_start) begin
@@ -250,7 +270,8 @@ module dy_spr_z80 (
         scan <= 1'b1;
         sc   <= 8'd0;
       end
-      if (!i_start && !scan && !d_v && hq_cnt == 3'd0 && rq_cnt == 3'd0 && busy && !o_done)
+      if (!i_start && !scan && !d_v && hq_cnt == 3'd0 && rq_cnt == 3'd0 && !drawing && !sa_act
+          && busy && !o_done)
         o_done <= 1'b1;
 
       // resolve read (only runs while the engine is idle)
