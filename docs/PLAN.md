@@ -377,6 +377,13 @@ as planned. Details in `docs/m2_findings.md`.
 Gate M3: register-stream parity with MAME for 2 minutes of attract
 audio per variant; level calibration within 1 dB of MAME's mix.
 
+**M3 status (2026-09-28): flytiger and bluehawk sound running, level gate
+PASS (+0.17 / +0.29 dB), stream parity PARTIAL.** Register streams are
+identical for 47 s (flytiger) and 35 s (bluehawk), then the sound programs
+diverge on timing-sensitive decisions; sound CPU timing, YM timer period and
+M6295 status were each checked equal to MAME. New research item R13.
+Details in `docs/m3_findings.md`.
+
 ### M4. MiSTer shell, SDRAM, Quartus
 
 - Template_MiSTer shell, OSD (DIPs per spec 9, inputs, video options),

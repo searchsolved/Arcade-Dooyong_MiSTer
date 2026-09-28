@@ -27,6 +27,11 @@
 #                        each, run in parallel), compared with MAME (gate)
 #   make m2-soak         flytiger 20,000 frames, gate counters must stay 0
 #
+# M3 targets (sound; the dy_sys harness includes the sound CPU, jt51, jt6295):
+#   make m3-wav          MAME WAVs of 7,300 frames (flytiger, bluehawk)
+#   make m3              7,300 frames of each game (about 1 h, in parallel),
+#                        register streams and mix level compared with MAME
+#
 # All MAME output lands in mame/out (gitignored). Every run starts from a
 # wiped cfg/nvram directory (mame/run_mame.sh), so captures are reproducible
 # from power-on.
@@ -50,7 +55,7 @@ FLIP_FRAMES := 1-3000/10
 
 EXTRA   := lastday gulfstrm pollux sadari gundl94
 
-.PHONY: m2-build m2-boot m2-soak m1-build m1-verify m1-extra m1-synth roms-check regions mame-regions oracle oracle-flytiger oracle-bluehawk \
+.PHONY: m3 m3-wav m2-build m2-boot m2-soak m1-build m1-verify m1-extra m1-synth roms-check regions mame-regions oracle oracle-flytiger oracle-bluehawk \
         oracle-verify oracle-extra survey analyze m0 clean-out
 
 roms-check:
@@ -139,14 +144,15 @@ m1-synth: $(M1BIN)
 # The simulation runs the system clock at 48 MHz (CPU /6, pixel 7,864,320 Hz
 # from 48 MHz) with a ROM model of one read per 4 clocks, latency 5; the
 # M1 budget numbers at 48 MHz (m1_findings 4) show this fits.
-M2RTL := ../rtl/vendor/t80/T80s.v $(M1RTL) ../rtl/dy_sys.sv
+M2RTL := ../rtl/vendor/t80/T80s.v $(wildcard ../rtl/vendor/jt51/hdl/jt51*.v) \
+  $(wildcard ../rtl/vendor/jt6295/hdl/*.v) $(M1RTL) ../rtl/dy_snd.sv ../rtl/dy_sys.sv
 M2DIR ?= build/m2/obj_dir
 M2BIN := $(M2DIR)/Vdy_sys
 
 $(M2BIN): $(M2RTL) m2/tb_sys.cpp
 	$(VERILATOR) --cc --exe --build -O3 -Wno-fatal -Wno-lint -Wno-style --x-assign fast --x-initial fast \
 	  --top-module dy_sys --Mdir $(M2DIR) -j 0 \
-	  -GCPU_DIV=6 -GPIX_NUM=786432 -GPIX_DEN=4800000 \
+	  -GCPU_DIV=6 -GCLK_HZ=48000000 -GPIX_NUM=786432 -GPIX_DEN=4800000 -I../rtl/vendor/jt51/hdl \
 	  -CFLAGS -O2 $(M2RTL) m2/tb_sys.cpp
 
 m2-build: $(M2BIN)
@@ -164,3 +170,25 @@ m2-soak: $(M2BIN)
 	mkdir -p $(M2OUT)/soak && : > $(M2OUT)/soak/cap.txt
 	$(M2BIN) +game=3 +sdram=build/regions/flytiger/sdram.bin +frames=20000 \
 	  +cap=$(M2OUT)/soak/cap.txt +out=$(M2OUT)/soak | tail -n 1
+
+# ---------------------------------------------------------------- M3
+M3OUT := build/m3/gate
+M3FRAMES := 7300
+
+m3-wav:
+	@for s in flytiger bluehawk; do \
+	  DUMP_DIR=$(OUT)/m3wav_$$s TOTAL=$(M3FRAMES) NO_SNAP=1 DUMP_FRAMES=$(M3FRAMES) \
+	    $(RUN) $$s $(ORACLE) -wavwrite $(CURDIR)/$(OUT)/m3wav_$$s.wav -samplerate 48000 >/dev/null 2>&1; \
+	done
+
+m3: $(M2BIN)
+	mkdir -p $(M3OUT)/flytiger $(M3OUT)/bluehawk
+	: > $(M3OUT)/none.txt
+	$(M2BIN) +game=3 +sdram=build/regions/flytiger/sdram.bin +frames=$(M3FRAMES) +cap=$(M3OUT)/none.txt \
+	  +out=$(M3OUT)/flytiger +snd=$(M3OUT)/flytiger/snd.txt +wav=$(M3OUT)/flytiger/audio.raw > $(M3OUT)/flytiger/run.log & \
+	$(M2BIN) +game=4 +sdram=build/regions/bluehawk/sdram.bin +frames=$(M3FRAMES) +cap=$(M3OUT)/none.txt \
+	  +out=$(M3OUT)/bluehawk +snd=$(M3OUT)/bluehawk/snd.txt +wav=$(M3OUT)/bluehawk/audio.raw > $(M3OUT)/bluehawk/run.log & wait
+	-$(PY) m3/compare_snd.py $(M3OUT)/flytiger/snd.txt $(OUT)/flytiger_attract --frames $(M3FRAMES)
+	-$(PY) m3/compare_snd.py $(M3OUT)/bluehawk/snd.txt $(OUT)/bluehawk_attract --frames $(M3FRAMES)
+	$(PY) m3/compare_audio.py $(M3OUT)/flytiger/audio.raw $(OUT)/m3wav_flytiger.wav
+	$(PY) m3/compare_audio.py $(M3OUT)/bluehawk/audio.raw $(OUT)/m3wav_bluehawk.wav

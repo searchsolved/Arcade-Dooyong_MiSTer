@@ -1,9 +1,8 @@
 // Dooyong Z80-family main system (PLAN M2): main Z80, program ROM, work RAM,
 // bus decode, control registers, inputs, and the video (dy_video).
 //
-// The sound CPU side (Z80, YM, OKI) is M3; the main CPU only writes the
-// sound latch and never reads anything back (spec 4), so the main system
-// runs the same without it. The latch value is exported for M3.
+// Sound (M3): dy_snd, the sound Z80 with YM2151 and M6295, fed by the
+// sound latch. The main CPU never reads anything back from it (spec 4).
 //
 // Clocks: one system clock (96 MHz on hardware; the simulation may run it
 // lower). CPU enable = clk / CPU_DIV (8 MHz). The pixel enable comes from a
@@ -19,6 +18,7 @@
 
 module dy_sys #(
     parameter int CPU_DIV = 12,
+    parameter int CLK_HZ  = 96000000,
     parameter int PIX_NUM = 786432,        // 7,864,320 / 10
     parameter int PIX_DEN = 9600000        // 96,000,000 / 10
 ) (
@@ -26,10 +26,16 @@ module dy_sys #(
     input  logic        rst_n,
     input  logic [3:0]  i_game,
 
-    // program ROM download (main CPU region, 128 KB)
+    // program ROM download: 0x00000-0x1FFFF main CPU, 0x20000-0x2FFFF sound CPU
     input  logic        i_dl_we,
-    input  logic [16:0] i_dl_addr,
+    input  logic [17:0] i_dl_addr,
     input  logic [7:0]  i_dl_data,
+
+    // M6295 sample ROM (256 KB, SDRAM 0x080000)
+    output logic [17:0] o_oki_addr,
+    input  logic [7:0]  i_oki_data,
+    input  logic        i_oki_ok,
+    output logic signed [15:0] o_audio,
 
     // inputs, active low (spec 9.2, 9.3)
     input  logic [7:0]  i_p1,
@@ -66,7 +72,8 @@ module dy_sys #(
     output logic [15:0] o_dbg_maxcyc,
     output logic [15:0] o_dbg_rom_writes,  // writes into 0x0000-0xBFFF (spec 3.8, T2)
     output logic [15:0] o_dbg_bank_hi,     // bankswitch writes with bits 3-7 set
-    output logic [15:0] o_cpu_pc_dbg       // address of the last opcode fetch
+    output logic [15:0] o_cpu_pc_dbg,      // address of the last opcode fetch
+    output logic [15:0] o_dbg_snd_rom_writes  // sound CPU writes into its ROM range (spec T4)
 );
 
   import dy_pkg::*;
@@ -163,7 +170,7 @@ module dy_sys #(
   wire  [16:0] rom_a = (sel == D_BANK) ? {bank, A[13:0]} : {2'b00, A[14:0]};
   dy_dpram #(.AW(17), .DW(8)) u_rom (
     .clk(clk),
-    .addr_a(i_dl_addr), .d_a(i_dl_data), .we_a(i_dl_we), .be_a(1'b1), .q_a(),
+    .addr_a(i_dl_addr[16:0]), .d_a(i_dl_data), .we_a(i_dl_we && !i_dl_addr[17]), .be_a(1'b1), .q_a(),
     .addr_b(rom_a), .q_b(rom_q));
 
   dy_dpram #(.AW(12), .DW(8)) u_wram (
@@ -303,6 +310,15 @@ module dy_sys #(
       endcase
     end
   end
+
+  // ================================================================ sound
+  dy_snd #(.CPU_DIV(2 * CPU_DIV), .YM_NUM(3579545), .YM_DEN(CLK_HZ), .OKI_DIV(8 * CPU_DIV)) u_snd (
+    .clk(clk), .rst_n(rst_n),
+    .i_dl_we(i_dl_we && i_dl_addr[17]), .i_dl_addr(i_dl_addr[15:0]), .i_dl_data(i_dl_data),
+    .i_latch(o_snd_latch),
+    .o_oki_addr(o_oki_addr), .i_oki_data(i_oki_data), .i_oki_ok(i_oki_ok),
+    .o_audio(o_audio), .o_ym_l(), .o_ym_r(), .o_oki(),
+    .o_dbg_rom_writes(o_dbg_snd_rom_writes));
 
   wire unused = &{1'b0, halt_n, busak_n, rd_n};
 

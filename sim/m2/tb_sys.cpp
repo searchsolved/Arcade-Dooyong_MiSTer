@@ -14,6 +14,12 @@
 // sim/m1/tb_video.cpp) +dswa=HEX +dswb=HEX +game=N (dy_pkg game ID)
 // +inputs=FILE: lines "frame p1 p2 system" (hex bytes, active low), each
 // applied from that vblank onward (input replay).
+// Sound (M3): the sound ROM is downloaded from SDRAM 0x040000; the M6295
+// reads its samples from SDRAM 0x080000 with +okilat=N clocks of latency
+// after each address change. +snd=FILE logs every sound CPU write to
+// 0xF808-0xF80A and to its ROM range as "vblank line hpos addr data" (the
+// same beam position the MAME oracle logs). +wav=FILE writes the mono mix
+// as 16-bit 48 kHz samples (raw, little-endian).
 
 #include "Vdy_sys.h"
 #include "Vdy_sys___024root.h"
@@ -44,7 +50,15 @@ static uint32_t rd32(uint32_t a) {
     return v;
 }
 
+static int okilat = 8, oki_cnt = 0;
+static uint32_t oki_last = 0xFFFFFFFF;
+
 static void tick() {
+    uint32_t oa = top->o_oki_addr;
+    if (oa != oki_last) { oki_last = oa; oki_cnt = 0; }
+    else if (oki_cnt < okilat) oki_cnt++;
+    top->i_oki_data = sdram[0x80000 + (oa & 0x3FFFF)];
+    top->i_oki_ok = oki_cnt >= okilat;
     bool rv = !rq.empty() && rq.front().t <= cycles;
     top->i_rom_rv = rv;
     if (rv) { top->i_rom_data = rq.front().d; rq.pop_front(); }
@@ -79,6 +93,15 @@ int main(int argc, char **argv) {
     lat = atoi(plus("lat", "5").c_str());
     intv = atoi(plus("intv", "4").c_str());
     int game = atoi(plus("game", "3").c_str());
+    okilat = atoi(plus("okilat", "8").c_str());
+    std::string sndf = plus("snd", ""), wavf = plus("wav", "");
+    FILE *fsnd = sndf.empty() ? nullptr : fopen(sndf.c_str(), "w");
+    FILE *fwav = wavf.empty() ? nullptr : fopen(wavf.c_str(), "wb");
+    std::string trf = plus("cputrace", "");       // sound CPU opcode fetch addresses
+    FILE *ftr = trf.empty() ? nullptr : fopen(trf.c_str(), "w");
+    bool m1_prev = true;
+    const uint64_t clk_hz = 48000000;               // sim clock (Makefile -GCLK_HZ)
+    uint64_t wav_acc = 0;
     {
         std::ifstream f(sd, std::ios::binary);
         if (!f) { fprintf(stderr, "cannot open sdram %s\n", sd.c_str()); return 2; }
@@ -114,6 +137,10 @@ int main(int argc, char **argv) {
         top->i_dl_we = 1; top->i_dl_addr = a; top->i_dl_data = sdram[a];
         tick();
     }
+    for (int a = 0; a < 0x10000; a++) {            // sound CPU region at SDRAM 0x040000
+        top->i_dl_we = 1; top->i_dl_addr = 0x20000 + a; top->i_dl_data = sdram[0x40000 + a];
+        tick();
+    }
     top->i_dl_we = 0;
     for (int i = 0; i < 8; i++) tick();
     top->rst_n = 1;
@@ -125,6 +152,33 @@ int main(int argc, char **argv) {
     std::string wlog;
     while (frame < nframes) {
         bool ce = r->dy_sys__DOT__ce_pix;          // enable going into this edge
+        {   // OKI status reads: value on the bus at the end of the read cycle
+            static bool rd_prev = true;
+            bool rdn = r->dy_sys__DOT__u_snd__DOT__rd_n;
+            if (fsnd && rdn && !rd_prev && r->dy_sys__DOT__u_snd__DOT__A == 0xF80A)
+                fprintf(fsnd, "R %ld %d %d %02x\n", frame, r->dy_sys__DOT__u_video__DOT__vcnt,
+                        r->dy_sys__DOT__u_video__DOT__hcnt, r->dy_sys__DOT__u_snd__DOT__din);
+            rd_prev = rdn;
+        }
+        if (fsnd && r->dy_sys__DOT__u_snd__DOT__wr) {
+            uint16_t a = r->dy_sys__DOT__u_snd__DOT__A;
+            if (a >= 0xF808 && a <= 0xF80A || a < 0xF000)
+                fprintf(fsnd, "%ld %d %d %04x %02x\n", frame, r->dy_sys__DOT__u_video__DOT__vcnt,
+                        r->dy_sys__DOT__u_video__DOT__hcnt, a, r->dy_sys__DOT__u_snd__DOT__dout);
+        }
+        if (ftr) {
+            bool m1 = r->dy_sys__DOT__u_snd__DOT__m1_n;
+            if (!m1 && m1_prev) fprintf(ftr, "%04X %llu\n", r->dy_sys__DOT__u_snd__DOT__A, (unsigned long long)(cycles / 12));
+            m1_prev = m1;
+        }
+        if (fwav) {
+            wav_acc += 48000;
+            if (wav_acc >= clk_hz) {
+                wav_acc -= clk_hz;
+                int16_t v = (int16_t)top->o_audio;
+                fwrite(&v, 2, 1, fwav);
+            }
+        }
         if (r->dy_sys__DOT__wr && r->dy_sys__DOT__A >= 0xC000 && cap.count(frame)) {
             char b[48];
             snprintf(b, sizeof b, "%d %d %04x %02x\n", r->dy_sys__DOT__u_video__DOT__vcnt,
@@ -182,6 +236,10 @@ int main(int argc, char **argv) {
                 for (int i = 0; i < 4096; i++) b[i] = r->dy_sys__DOT__u_wram__DOT__mem[i];
                 snprintf(fn, sizeof fn, "%s/%06ld.wram", out.c_str(), frame); dump(fn, b.data(), 4096);
             }
+            if (fsnd)
+                fprintf(fsnd, "# vblank %ld oki busy %x start %x stop %x\n", frame,
+                        r->dy_sys__DOT__u_snd__DOT__u_oki__DOT__busy, r->dy_sys__DOT__u_snd__DOT__u_oki__DOT__start,
+                        r->dy_sys__DOT__u_snd__DOT__u_oki__DOT__stop);
             if (frame % 100 == 0) {
                 printf("vblank %ld pc %04x overruns %d maxcyc %d romwr %d bankhi %d\n", frame,
                        top->o_cpu_pc_dbg, top->o_dbg_overruns, top->o_dbg_maxcyc,
@@ -190,9 +248,12 @@ int main(int argc, char **argv) {
             }
         }
     }
-    printf("DONE vblanks %ld cycles %llu overruns %d maxcyc %d romwr %d bankhi %d\n", frame,
+    printf("DONE vblanks %ld cycles %llu overruns %d maxcyc %d romwr %d bankhi %d sndromwr %d\n", frame,
            (unsigned long long)cycles, top->o_dbg_overruns, top->o_dbg_maxcyc,
-           top->o_dbg_rom_writes, top->o_dbg_bank_hi);
+           top->o_dbg_rom_writes, top->o_dbg_bank_hi, top->o_dbg_snd_rom_writes);
+    if (fsnd) fclose(fsnd);
+    if (fwav) fclose(fwav);
+    if (ftr) fclose(ftr);
     top->final();
     top.reset();
     fflush(stdout);
