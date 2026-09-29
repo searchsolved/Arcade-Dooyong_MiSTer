@@ -211,9 +211,10 @@ int main(int argc, char **argv) {
                 char fn[64];
                 std::vector<uint8_t> b;
                 b.resize(4096);
-                for (int i = 0; i < 2048; i++) {        // palette, CPU byte order
+                for (int i = 0; i < 2048; i++) {        // palette, CPU byte order (68000: big-endian)
                     uint16_t w = r->tb_board__DOT__u_board__DOT__u_sys__DOT__u_video__DOT__u_pal__DOT__mem[i];
-                    b[2 * i] = w & 0xFF; b[2 * i + 1] = w >> 8;
+                    if (game >= 7 && game <= 9) { b[2 * i] = w >> 8; b[2 * i + 1] = w & 0xFF; }
+                    else                        { b[2 * i] = w & 0xFF; b[2 * i + 1] = w >> 8; }
                 }
                 snprintf(fn, sizeof fn, "%s/%06ld.pal", out.c_str(), frame); dump(fn, b.data(), 4096);
                 for (int i = 0; i < 2048; i++) {        // text, logical big-endian words
@@ -226,7 +227,10 @@ int main(int argc, char **argv) {
                     for (int k = 0; k < 4; k++) b[4 * i + k] = (w >> (24 - 8 * k)) & 0xFF;
                 }
                 snprintf(fn, sizeof fn, "%s/%06ld.spr", out.c_str(), frame); dump(fn, b.data(), 4096);
-                for (int i = 0; i < 4096; i++) b[i] = r->tb_board__DOT__u_board__DOT__u_sys__DOT__u_wram__DOT__mem[i];
+                for (int i = 0; i < 4096; i++) {       // Z80 work RAM: bytes 0-4095 of the 16-bit RAM
+                    uint16_t w = r->tb_board__DOT__u_board__DOT__u_sys__DOT__u_ram__DOT__mem[i >> 1];
+                    b[i] = (i & 1) ? (w & 0xFF) : (w >> 8);
+                }
                 snprintf(fn, sizeof fn, "%s/%06ld.wram", out.c_str(), frame); dump(fn, b.data(), 4096);
             }
             if (fsnd)
