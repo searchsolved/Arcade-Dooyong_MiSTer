@@ -55,6 +55,6 @@ else
     put "$f" "/media/fat/_Arcade/$(basename "$f")"
   done
 fi
-for z in flytiger bluehawk sadari gundl94; do
+for z in lastday gulfstrm pollux flytiger bluehawk sadari gundl94; do
   put "$ROOT/roms/$z.zip" "/media/fat/games/mame/$z.zip"
 done

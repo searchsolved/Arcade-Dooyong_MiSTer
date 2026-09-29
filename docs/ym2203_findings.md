@@ -105,3 +105,5 @@ whether the main loop finishes before the vblank, and its frame counters
 run one frame out of phase from there. The core follows the real CPU here,
 so this is recorded rather than changed to copy MAME. The displayed frames
 before the split are all exact or line-exact.
+
+Hardware build (2026-09-29): compile 6 failed timing (-0.606 ns, all 400 failing paths inside jt12_pg); jt12_pg multicycle added (Arcade-Dooyong.sdc); compile 7 +0.448 ns / video +3.162 ns / hold +0.253, 20,226 ALMs (48%), 298 RAM blocks (54%). Dooyong_20260929.rbf md5 bb9aaf34 deployed with all 20 MRAs (previous build kept as .bak on the MiSTer).

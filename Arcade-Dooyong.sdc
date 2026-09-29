@@ -33,6 +33,17 @@ set_multicycle_path -setup -end 2 \
 set_multicycle_path -hold -end 1 \
     -from [get_registers {emu|board|*u_oki|*}] -to [get_registers {emu|board|*u_oki|*}]
 
+# jt03 (YM2203) phase generator: every register in jt12_pg and its shift
+# registers updates only on clk_en = cen & internal divider (4 or 1.5 MHz
+# chip enable, at least 24 clocks apart). Only paths with both ends inside
+# u_pg are relaxed; the rest of jt12 (register writes at clk speed, the
+# registered cen) stays single-cycle. Compile 6: all 400 failing paths
+# (worst -0.606 ns) were inside u_pg.
+set_multicycle_path -setup -end 2 \
+    -from [get_registers {emu|board|*u_opn*|*u_pg|*}] -to [get_registers {emu|board|*u_opn*|*u_pg|*}]
+set_multicycle_path -hold -end 1 \
+    -from [get_registers {emu|board|*u_opn*|*u_pg|*}] -to [get_registers {emu|board|*u_opn*|*u_pg|*}]
+
 # The game ID is loaded from the MRA while the core is held in reset and
 # is static during play.
 set_false_path -from [get_registers {emu|board|game*}]
