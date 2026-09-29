@@ -128,10 +128,13 @@ module dy_spr_z80 (
   wire [11:0]        tile = (c_code + {9'b0, yidx}) & i_code_mask[11:0];
   wire [3:0]         col  = b1[3:0];
 
-  // 68000 entry: w0 bit 0 enable, w1 width/height, w3 code, w4 X, w6 Y
-  // (on the bus now, [31:16]), w7 colour ([15:0])
-  wire [15:0]        m_w6 = i_buf_data[31:16];
-  wire [15:0]        m_w7 = i_buf_data[15:0];
+  // 68000 entry: w0 bit 0 enable, w1 width/height, w3 code, w4 X, w6 Y,
+  // w7 colour. Two pipeline stages after the last word (m4 STA compile 8:
+  // RAM output -> hit logic -> queue in one clock failed by 4 ns): E1
+  // evaluates the hit from registered words, E2 adds the row offset to the
+  // code and pushes. Entries arrive every 4 clocks, so throughput is kept.
+  logic [15:0]       m_w6, m_w7;
+  logic              e1_v, e2_v;
   wire [3:0]         m_w  = m_w1[3:0];
   wire [3:0]         m_h  = m_w1[7:4];
   wire signed [10:0] m_sx0 = $signed({2'b00, m_w4[8:0]});
@@ -143,11 +146,16 @@ module dy_spr_z80 (
   wire [3:0]         m_k  = m_d[7:4];
   wire [3:0]         m_yi = flip ? m_h - m_k : m_k;
   wire [3:0]         m_tr = flip ? ~m_d[3:0] : m_d[3:0];
-  wire [13:0]        m_tile = 14'(m_w3 + {8'b0, m_yi} * ({1'b0, m_w} + 5'd1));
   wire [3:0]         m_col = m_w7[3:0];
-  assign hq_d    = m68k ? {m_w, m_sx, flip, (m_col == 4'd0) || (m_col == 4'd15), m_col, m_tile, m_tr}
+  // E2 registers
+  logic              e2_hit;
+  logic [3:0]        e2_w, e2_yi, e2_tr, e2_col;
+  logic signed [10:0] e2_sx;
+  logic [15:0]       e2_code;
+  wire  [13:0]       e2_tile = 14'(e2_code + {8'b0, e2_yi} * ({1'b0, e2_w} + 5'd1));
+  assign hq_d    = m68k ? {e2_w, e2_sx, flip, (e2_col == 4'd0) || (e2_col == 4'd15), e2_col, e2_tile, e2_tr}
                         : {4'd0, c_sx, c_fx, (col == 4'd0) || (col == 4'd15), col, {2'b00, tile}, trow};
-  assign hq_push = m68k ? (d_v && d_sc[1:0] == 2'd3 && m_hit) : (d_v && d_sc[0] && hit);
+  assign hq_push = m68k ? (e2_v && e2_hit) : (d_v && d_sc[0] && hit);
 
   // ---------------------------------------------------------------- fetch
   // record queue: hit + its two words; filled in order by the responses
@@ -239,6 +247,8 @@ module dy_spr_z80 (
     if (!rst_n) begin
       scan     <= 1'b0;
       d_v      <= 1'b0;
+      e1_v     <= 1'b0;
+      e2_v     <= 1'b0;
       hq_wp    <= '0;
       hq_rp    <= '0;
       hq_cnt   <= '0;
@@ -267,6 +277,19 @@ module dy_spr_z80 (
       if (d_v && d_sc[1:0] == 2'd0) {m_w0, m_w1} <= i_buf_data;
       if (d_v && d_sc[1:0] == 2'd1) m_w3 <= i_buf_data[15:0];
       if (d_v && d_sc[1:0] == 2'd2) m_w4 <= i_buf_data[31:16];
+      // 68000 pipeline: last word -> E1 (hit from registers) -> E2 (tile, push)
+      e1_v <= m68k && d_v && d_sc[1:0] == 2'd3;
+      if (d_v && d_sc[1:0] == 2'd3) {m_w6, m_w7} <= i_buf_data;
+      e2_v <= e1_v;
+      if (e1_v) begin
+        e2_hit  <= m_hit;
+        e2_w    <= m_w;
+        e2_yi   <= m_yi;
+        e2_tr   <= m_tr;
+        e2_col  <= m_col;
+        e2_sx   <= m_sx;
+        e2_code <= m_w3;
+      end
       if (hq_push) begin
         hq[hq_wp] <= hq_d;
         hq_wp <= hq_wp + 2'd1;
@@ -333,7 +356,7 @@ module dy_spr_z80 (
         scan <= 1'b1;
         sc   <= 10'd0;
       end
-      if (!i_start && !scan && !d_v && hq_cnt == 3'd0 && rq_cnt == 3'd0 && !drawing && !sa_act
+      if (!i_start && !scan && !d_v && !e1_v && !e2_v && hq_cnt == 3'd0 && rq_cnt == 3'd0 && !drawing && !sa_act
           && busy && !o_done)
         o_done <= 1'b1;
 
