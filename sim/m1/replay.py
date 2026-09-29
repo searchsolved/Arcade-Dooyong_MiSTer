@@ -36,7 +36,8 @@ from dy_render import MACHINES, palette_rgb, render  # noqa: E402
 
 BIN = HERE.parent / "build" / "m1" / "obj_dir" / "Vdy_video"
 REGIONS = ROOT / "sim" / "build" / "regions"
-GAME_ID = {"lastday": 0, "gulfstrm": 1, "pollux": 2, "flytiger": 3, "bluehawk": 4}
+GAME_ID = {"lastday": 0, "gulfstrm": 1, "pollux": 2, "flytiger": 3, "bluehawk": 4,
+           "superx": 7, "rshark": 8, "popbingo": 9}
 # primella machine config: sadari 5, gundl94 and its clone primella 6
 PRIMELLA_ID = {"sadari": 5, "gundl94": 6, "primella": 6}
 
@@ -47,8 +48,9 @@ def game_id(st):
 
 def lines(mname):
     return 256 if mname == "primella" else 240
-ROT270 = {"lastday", "gulfstrm", "pollux", "flytiger", "bluehawk"}
-LAYER_ORDER = ("bg0", "fg0", "fg1")
+ROT270 = {"lastday", "gulfstrm", "pollux", "flytiger", "bluehawk", "superx", "rshark"}
+LAYER_ORDER = ("bg0", "fg0", "fg1", "bg1")
+M68K = {"superx", "rshark", "popbingo"}
 
 
 def text_cpu_bytes(words, lane0):
@@ -67,7 +69,7 @@ def make_dyf(fd, path):
     st = json.loads((fd / "state.json").read_text())
     mname = st["machine"]
     mc = MACHINES[mname]
-    regs = bytearray(24)
+    regs = bytearray(32)
     for li, name in enumerate(LAYER_ORDER):
         lc = mc["layers"].get(name)
         if lc:
@@ -75,11 +77,15 @@ def make_dyf(fd, path):
             regs[li * 8:li * 8 + 8] = bytes(v & 0xFF for v in r[:8])
     flags = (bool(st.get("m_flip_screen_x", [0])[0])
              | bool(st.get("m_palette_bank", [0])[0]) << 1
-             | bool(st.get("m_tx_pri" if mname == "primella" else "m_flytiger_pri", [0])[0]) << 2
+             | bool(st.get({"primella": "m_tx_pri"}.get(mname, "m_bg2_priority" if mname in M68K else "m_flytiger_pri"),
+                          [0])[0]) << 2
              | bool(st.get("m_sprites_disabled", [0])[0]) << 3)
     pal = (fd / "palette.bin").read_bytes()[:mc["pal_entries"] * 2]
-    words = np.frombuffer((fd / "text.bin").read_bytes(), dtype=">u2")
-    txt = text_cpu_bytes([int(w) for w in words], mc["text"]["layout"] == "packed")
+    if mc["text"] is not None:
+        words = np.frombuffer((fd / "text.bin").read_bytes(), dtype=">u2")
+        txt = text_cpu_bytes([int(w) for w in words], mc["text"]["layout"] == "packed")
+    else:
+        txt = bytes(4096)
     sp = fd / "spriteram_buf.bin"          # none on the primella family
     spr = ((sp.read_bytes() if sp.exists() else b"") + bytes(4096))[:4096]
     hdr = b"DYF1" + bytes([game_id(st), flags]) + len(pal).to_bytes(2, "little")
@@ -125,7 +131,7 @@ def check(fd, st, out_path, diffdir):
         ref = np.array(Image.open(snap_p).convert("RGB"))
         tag = "snap"
     else:
-        pal = palette_rgb((fd / "palette.bin").read_bytes(), mc["palette"], nent)
+        pal = palette_rgb((fd / "palette.bin").read_bytes(), mc["palette"], nent, mc.get("pal_be", False))
         ref = pal[ref_pens]
         view = rgb
         tag = "model"

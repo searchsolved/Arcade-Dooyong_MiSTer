@@ -138,7 +138,7 @@ m1-verify: $(M1BIN)
 	$(PY) m1/replay.py $(M1RUNS) --quiet
 
 # primella family (sadari, gundl94) not in the M1 RTL yet
-M1EXTRA := lastday gulfstrm pollux sadari gundl94
+M1EXTRA := lastday gulfstrm pollux sadari gundl94 superx rshark popbingo
 m1-extra: $(M1BIN)
 	$(PY) m1/replay.py $(addprefix $(OUT)/extra_,$(M1EXTRA)) --quiet
 

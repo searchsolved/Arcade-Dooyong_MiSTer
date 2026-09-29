@@ -27,6 +27,13 @@
 // the state MAME draws at vblank N. No sprites; the text layer goes below
 // fg0 when ctrl bit 3 is set (i_pri_swap).
 //
+// 68000 family (superx, rshark, popbingo; spec 10.2, 11.7, 11.9): four ROM
+// layers (bg0, bg1, fg0, fg1; 16x16 with the colour ROM on superx/rshark),
+// pass order bg0 (pri 1), bg1 (pri 2 if ctrl bit 4 = i_pri_swap, else 1),
+// fg0 (2), fg1 (2); the sprite engine in 68000 mode; popbingo combines its
+// two layers into 0x100 | bg0 << 4 | bg1. CPU writes are 16-bit big-endian
+// words with byte enables (i_cpu_be = {UDS, LDS}). IRQ6 at line 120.
+//
 // Per line L (rendered during line L-1 into one half of a double buffer):
 //   1. tilemap passes in the game's order (spec 11), each setting its
 //      priority bit where opaque and overwriting the pen; in parallel the
@@ -52,20 +59,22 @@ module dy_video #(
 
     // CPU side, already decoded by the system (M2); byte wide
     input  logic [11:0] i_cpu_addr,
-    input  logic [7:0]  i_cpu_din,
+    input  logic [15:0] i_cpu_din,      // Z80: byte in [7:0]; 68000: word
+    input  logic [1:0]  i_cpu_be,       // 68000 {UDS, LDS}; ignored on the Z80 games
     input  logic        i_pal_we,       // palette byte address (bank applied by the decoder)
     input  logic        i_txt_we,       // text RAM CPU offset (layout per game, spec 8)
     input  logic        i_spr_we,       // live sprite RAM
     output logic [7:0]  o_pal_dout,
     output logic [7:0]  o_txt_dout,
     output logic [7:0]  o_spr_dout,
+    output logic [15:0] o_spr_dout16,   // 68000 word read
     input  logic        i_tm_we,
-    input  logic [1:0]  i_tm_layer,     // 0 bg0, 1 fg0, 2 fg1
+    input  logic [1:0]  i_tm_layer,     // 0 bg0, 1 fg0, 2 fg1, 3 bg1
     input  logic [2:0]  i_tm_reg,
     input  logic [7:0]  i_tm_din,
     input  logic        i_flip,
     input  logic        i_pal_bank,
-    input  logic        i_pri_swap,     // flytiger ctrl bit 4
+    input  logic        i_pri_swap,     // flytiger ctrl bit 4; primella text priority; 68000 bg2_priority
     input  logic        i_spr_disable,  // lastday ctrl bit 4
 
     // graphics ROM port: accepted when o_rom_req && i_rom_gnt; i_rom_rv
@@ -87,6 +96,7 @@ module dy_video #(
     output logic        o_vs,
     output logic [11:0] o_pen,          // {black, pen} with the pixel (sim/debug)
     output logic        o_vbl_irq,      // one clk at the start of line 248
+    output logic        o_irq6,         // 68000 games: start of line 120 (spec 5.2)
 
     // always-on gate counters (PLAN M2)
     output logic [15:0] o_dbg_overruns,
@@ -122,6 +132,7 @@ module dy_video #(
   wire line_start = ce_pix && hcnt == 9'd0;
   wire last_line  = vfull == 9'(V_TOTAL - 1);
   wire prm        = is_primella(i_game);
+  wire m68k       = is_m68k(i_game);
   // primella vblank = line 256; with V_TOTAL 256 that is the wrap to line 0,
   // which must not count at power-on (MAME's first vblank is one frame in)
   logic wrapped, started;
@@ -138,15 +149,16 @@ module dy_video #(
   wire vbl_start  = line_start && (prm ? vbl_prm : (!vextra && vcnt == 8'd248 && started));
   wire latch_now  = line_start && (prm ? last_line : (!vextra && vcnt == 8'(LATCH_LINE)));
   assign o_vbl_irq = vbl_start;
+  assign o_irq6    = line_start && m68k && !vextra && vcnt == 8'd120;
 
   // ================================================================ registers
-  logic [7:0] tm_live [3][8];
-  logic [7:0] tm_l    [3][8];
+  logic [7:0] tm_live [4][8];
+  logic [7:0] tm_l    [4][8];
   logic       flip_l, bank_l, pri_l, sdis_l;
 
   always_ff @(posedge clk) begin
     if (!rst_n) begin
-      for (int l = 0; l < 3; l++)
+      for (int l = 0; l < 4; l++)
         for (int r = 0; r < 8; r++) begin
           tm_live[l][r] <= 8'd0;
           tm_l[l][r]    <= 8'd0;
@@ -155,7 +167,7 @@ module dy_video #(
     end else begin
       // a write only takes effect on change (spec 7.2); storing the value
       // is equivalent here because this renderer has no tile cache
-      if (i_tm_we && i_tm_layer != 2'd3) tm_live[i_tm_layer][i_tm_reg] <= i_tm_din;
+      if (i_tm_we) tm_live[i_tm_layer][i_tm_reg] <= i_tm_din;
       if (latch_now) begin
         tm_l   <= tm_live;
         flip_l <= i_flip;
@@ -173,8 +185,8 @@ module dy_video #(
   logic        pal_lane_q, txt_lane_q;
   dy_dpram #(.AW(11), .DW(16)) u_pal (
     .clk(clk),
-    .addr_a(i_cpu_addr[11:1]), .d_a({i_cpu_din, i_cpu_din}), .we_a(i_pal_we),
-    .be_a(i_cpu_addr[0] ? 2'b10 : 2'b01), .q_a(pal_q),
+    .addr_a(i_cpu_addr[11:1]), .d_a(m68k ? i_cpu_din : {i_cpu_din[7:0], i_cpu_din[7:0]}), .we_a(i_pal_we),
+    .be_a(m68k ? i_cpu_be : (i_cpu_addr[0] ? 2'b10 : 2'b01)), .q_a(pal_q),
     .addr_b(pal_vaddr), .q_b(pal_vq));
 
   // text: 2048 x 16 logical entries; CPU lane per layout (spec 8)
@@ -184,7 +196,7 @@ module dy_video #(
   logic [15:0] txt_q, txt_vq;
   dy_dpram #(.AW(11), .DW(16)) u_txt (
     .clk(clk),
-    .addr_a(txt_caddr), .d_a({i_cpu_din, i_cpu_din}), .we_a(i_txt_we),
+    .addr_a(txt_caddr), .d_a({i_cpu_din[7:0], i_cpu_din[7:0]}), .we_a(i_txt_we),
     .be_a(txt_clane ? 2'b10 : 2'b01), .q_a(txt_q),
     .addr_b(txt_vaddr), .q_b(txt_vq));
 
@@ -213,17 +225,19 @@ module dy_video #(
   logic [31:0] cp_q, live_qa;
   logic        p1_we, p2_we, p3_we, p1_sn, p2_sn;
   logic [11:0] p1_a, p2_a, p3_a;
-  logic [7:0]  p1_d, p2_d, p3_d;
+  logic [15:0] p1_d, p2_d, p3_d;       // halfword, bytes in address order
+  logic [1:0]  p1_be, p2_be, p3_be;    // {even byte, odd byte}
   logic        p2_cb_w;                // p2's word already copied by the engine
   wire         p2_cb = p2_cb_w || mk_cq;             // ... or already saved
   logic [1:0]  spr_lane_q;
   dy_dpram #(.AW(10), .DW(32)) u_spr_live (
     .clk(clk),
-    .addr_a(p3_we ? p3_a[11:2] : i_cpu_addr[11:2]), .d_a({4{p3_d}}), .we_a(p3_we),
-    .be_a(4'b1000 >> p3_a[1:0]), .q_a(live_qa),
+    .addr_a(p3_we ? p3_a[11:2] : i_cpu_addr[11:2]), .d_a({2{p3_d}}), .we_a(p3_we),
+    .be_a(p3_a[1] ? {2'b00, p3_be} : {p3_be, 2'b00}), .q_a(live_qa),
     .addr_b(cp_raddr), .q_b(cp_q));
   always_ff @(posedge clk) spr_lane_q <= i_cpu_addr[1:0];
-  assign o_spr_dout = live_qa[8 * (3 - spr_lane_q) +: 8];
+  assign o_spr_dout   = live_qa[8 * (3 - spr_lane_q) +: 8];
+  assign o_spr_dout16 = spr_lane_q[1] ? live_qa[15:0] : live_qa[31:16];
 
   logic        cp_we;
   logic [9:0]  cp_waddr;
@@ -271,16 +285,20 @@ module dy_video #(
       // CPU write pipeline
       p1_we <= i_spr_we;
       p1_a  <= i_cpu_addr;
-      p1_d  <= i_cpu_din;
+      // Z80 byte: both halves, enable by address bit 0; 68000 word as is
+      p1_d  <= m68k ? i_cpu_din : {i_cpu_din[7:0], i_cpu_din[7:0]};
+      p1_be <= m68k ? i_cpu_be : (i_cpu_addr[0] ? 2'b01 : 2'b10);
       p1_sn <= snap;                   // issued inside the snapshot window
       p2_we <= p1_we;
       p2_a  <= p1_a;
       p2_d  <= p1_d;
+      p2_be <= p1_be;
       p2_sn <= p1_sn;
       p2_cb_w <= p1_a[11:2] < cp_i[9:0] || cp_i[10];   // engine already past it
       p3_we <= p2_we;
       p3_a  <= p2_a;
       p3_d  <= p2_d;
+      p3_be <= p2_be;
       // buffer writes one clock after each live read; an engine read is
       // dropped if its word was saved (mk_eq, read in the same clock)
       cp_we    <= rd_v && !(rd_eng && mk_eq);
@@ -311,7 +329,9 @@ module dy_video #(
   // ================================================================ line buffers
   logic [383:0] lvalid, lp0, lp1, lp2;
   logic [10:0]  lpen [384];
-  logic [11:0]  obuf [1024];           // {valid, pen}; index {parity, x}, x < 384
+  logic [3:0]   lpen2 [384];           // popbingo: bg1's raw pen
+  logic [383:0] lvalid2;               // popbingo: bg1 written (a disabled layer gives the black pen)
+  logic [11:0]  obuf [2048];           // {valid, pen}; index {line[1:0], x}, x < 384
 
   // ================================================================ renderer
   typedef enum logic [2:0] {R_IDLE, R_PASS, R_PASS_WAIT, R_SPR_WAIT, R_RES, R_RES_END} rstate_t;
@@ -320,36 +340,46 @@ module dy_video #(
   logic [2:0]  pi;                     // pass index
   logic [15:0] rcyc;
 
-  // pass list (spec 11): source 0 bg0, 1 fg0, 2 fg1, 3 text; bit = priority bit
-  // (primella: no sprites, so the bits are unused; pri_l = text below fg0)
-  logic [1:0] p_src [4];
+  // pass list (spec 11): source 0 bg0, 1 fg0, 2 fg1, 3 bg1, 4 text; bit =
+  // priority bit (0: pri 1, 1: pri 2, 2: pri 4). primella: no sprites, the
+  // bits are unused (pri_l = text below fg0). 68000: pri_l = bg2_priority.
+  // popbingo: bg1's pass writes the second pen buffer (composite).
+  logic [2:0] p_src [4];
   logic [1:0] p_bit [4];
   logic [2:0] p_n;
   always_comb begin
-    p_src = '{2'd0, 2'd1, 2'd3, 2'd3};
+    p_src = '{3'd0, 3'd1, 3'd4, 3'd4};
     p_bit = '{2'd0, 2'd1, 2'd2, 2'd2};
     p_n   = 3'd3;
     if (i_game == G_FLYTIGER && pri_l) begin
-      p_src = '{2'd1, 2'd0, 2'd3, 2'd3};
+      p_src = '{3'd1, 3'd0, 3'd4, 3'd4};
     end else if (i_game == G_BLUEHAWK) begin
-      p_src = '{2'd0, 2'd1, 2'd2, 2'd3};
+      p_src = '{3'd0, 3'd1, 3'd2, 3'd4};
       p_n   = 3'd4;
     end else if (prm && pri_l) begin
-      p_src = '{2'd0, 2'd3, 2'd1, 2'd3};
+      p_src = '{3'd0, 3'd4, 3'd1, 3'd4};
+    end else if (cfg.pbingo) begin
+      p_src = '{3'd0, 3'd3, 3'd4, 3'd4};
+      p_n   = 3'd2;
+    end else if (m68k) begin
+      p_src = '{3'd0, 3'd3, 3'd1, 3'd2};
+      p_bit = '{2'd0, pri_l ? 2'd1 : 2'd0, 2'd1, 2'd1};
+      p_n   = 3'd4;
     end
   end
 
-  wire [1:0]       cur_src = p_src[pi[1:0]];
-  wire             cur_txt = (cur_src == 2'd3);
+  wire [2:0]       cur_src = p_src[pi[1:0]];
+  wire             cur_txt = (cur_src == 3'd4);
   layer_cfg_t      cur_lc;
   always_comb begin
     case (cur_src)
-      2'd0:    cur_lc = cfg.bg0;
-      2'd1:    cur_lc = cfg.fg0;
+      3'd0:    cur_lc = cfg.bg0;
+      3'd1:    cur_lc = cfg.fg0;
+      3'd3:    cur_lc = cfg.bg1;
       default: cur_lc = cfg.fg1;
     endcase
   end
-  wire [1:0] lidx    = cur_txt ? 2'd0 : cur_src;
+  wire [1:0] lidx    = cur_txt ? 2'd0 : cur_src[1:0];
   wire [7:0] cur_r6  = tm_l[lidx][6];
   wire       cur_off = !cur_txt && (!cur_lc.present || cur_r6[4]);
 
@@ -365,6 +395,7 @@ module dy_video #(
   logic        rs_occ, rs_cls;
   logic [10:0] rs_pen;
   logic [1:0]  wbit;
+  logic        wsec;
 
   dy_layer_pass u_pass (
     .clk(clk), .rst_n(rst_n),
@@ -373,6 +404,8 @@ module dy_video #(
     .i_map_base(cur_lc.map_base), .i_map_mask(cur_lc.map_mask),
     .i_opaque(cur_lc.opaque), .i_cbase(cur_lc.cbase),
     .i_reg0(tm_l[lidx][0]), .i_reg1(tm_l[lidx][1]), .i_reg3(tm_l[lidx][3]),
+    .i_reg4(tm_l[lidx][4]), .i_t16(cur_lc.t16), .i_crom(cur_lc.crom),
+    .i_crom_base(cur_lc.crom_base), .i_col0(cur_lc.col0), .i_layer(lidx),
     .i_fmt_a(cur_r6[5]),
     .i_tx_packed(cfg.tx_packed), .i_tx_base(SD_TX), .i_tx_half(cfg.tx_half),
     .i_tx_mask(cfg.tx_mask), .i_tx_yscroll(flip_l ? 8'(-cfg.tx_yscroll) : cfg.tx_yscroll),
@@ -385,7 +418,7 @@ module dy_video #(
     .clk(clk), .rst_n(rst_n),
     .i_start(sp_start), .i_line(rline), .i_flip(flip_l), .i_bank(bank_l),
     .i_code_mask(cfg.spr_mask), .i_f12(cfg.spr_12bit), .i_fheight(cfg.spr_height),
-    .i_ysh_ft(cfg.spr_ysh_ft), .i_ysh_bh(cfg.spr_ysh_bh),
+    .i_ysh_ft(cfg.spr_ysh_ft), .i_ysh_bh(cfg.spr_ysh_bh), .i_m68k(m68k),
     .o_buf_addr(sb_raddr), .i_buf_data(sb_q),
     .o_rom_req(sp_req), .o_rom_addr(sp_addr),
     .i_rom_gnt(sp_gnt), .i_rom_rv(sp_rv), .i_rom_data(i_rom_data),
@@ -423,11 +456,16 @@ module dy_video #(
   always_ff @(posedge clk) begin
     if (!rst_n) begin
       lvalid <= '0;
+      lvalid2 <= '0;
       lp0 <= '0;
       lp1 <= '0;
       lp2 <= '0;
     end else begin
-      if (lp_we) begin
+      if (lp_we && wsec) begin
+        lpen2[lp_x]   <= lp_pen[3:0];
+        lvalid2[lp_x] <= 1'b1;
+      end
+      else if (lp_we) begin
         lvalid[lp_x] <= 1'b1;
         lpen[lp_x]   <= lp_pen;
         case (wbit)
@@ -438,6 +476,7 @@ module dy_video #(
       end
       if (rs_en) begin
         lvalid[rs_x] <= 1'b0;
+        lvalid2[rs_x] <= 1'b0;
         lp0[rs_x] <= 1'b0;
         lp1[rs_x] <= 1'b0;
         lp2[rs_x] <= 1'b0;
@@ -453,20 +492,36 @@ module dy_video #(
   wire [11:0]  r2_out  = (rs_occ && !blocked) ? {1'b1, rs_pen}
                         : r2_lv ? {1'b1, r2_lpen} : 12'd0;
 
-  // line rendered next: normal games 8-247 (during lines 7-246); primella
-  // 0-255 (line 0 during the last line of the frame)
-  wire       line_ok  = prm ? (last_line || (!vextra && vcnt != 8'd255))
-                            : (!vextra && (vcnt >= 8'd7) && (vcnt <= 8'd246));
-  wire [7:0] next_line = last_line ? 8'd0 : vcnt + 8'd1;
+  // Render scheduling. The renderer may run up to three lines ahead of the
+  // scan-out (four output line buffers), so a heavy line borrows time from
+  // lighter neighbours (m1: rshark's densest lines need up to ~6,800 clocks
+  // against 6,144 per line). A frame is armed one clock after its register
+  // latch (line 7, or the last line on the primella family) and renders
+  // lines 8-247 (0-255 on primella) in order. inuse counts lines started and
+  // not yet fully scanned out (at most 4 buffers); ready counts finished
+  // lines not yet shown. A displayed line whose render is not finished at
+  // its start is an overrun.
+  wire       arm_now  = line_start && (prm ? last_line : (!vextra && vcnt == 8'd7));
+  wire [7:0] first_ln = prm ? 8'd0 : 8'd8;
+  wire [7:0] last_ln  = prm ? 8'd255 : 8'd247;
+  wire       disp     = prm ? !vextra : (!vextra && vcnt >= 8'd8 && vcnt <= 8'd247);
   wire       no_spr   = prm || (sdis_l && i_game == G_LASTDAY);
-  // render start one clock after the line start, so a latch on that line
-  // start is visible to everything the renderer reads
-  logic go;
-  always_ff @(posedge clk) go <= rst_n && line_start && line_ok;
+  logic go_arm, rarm, prev_disp, armed_once;
+  logic [7:0] rnext;
+  logic [2:0] inuse, ready;
+  wire        can_start = rarm && inuse < 3'd4;
+  // render start one clock after the latch, so the latched values are
+  // visible to everything the renderer reads
+  always_ff @(posedge clk) go_arm <= rst_n && arm_now;
 
   always_ff @(posedge clk) begin
     if (!rst_n) begin
       rs             <= R_IDLE;
+      rarm           <= 1'b0;
+      armed_once     <= 1'b0;
+      inuse          <= '0;
+      ready          <= '0;
+      prev_disp      <= 1'b0;
       lp_start       <= 1'b0;
       sp_start       <= 1'b0;
       rs_en          <= 1'b0;
@@ -478,12 +533,31 @@ module dy_video #(
       sp_start <= 1'b0;
       if (sp_done) sp_fin <= 1'b1;
       if (rs != R_IDLE) rcyc <= rcyc + 16'd1;
-      if (go) begin
-        if (rs != R_IDLE) o_dbg_overruns <= o_dbg_overruns + 16'd1;
+      // buffer accounting (see above)
+      begin
+        logic inc_u, dec_u, inc_r, dec_r;
+        inc_u = (rs == R_IDLE) && can_start && !go_arm;
+        dec_u = line_start && prev_disp;
+        inc_r = (rs == R_RES_END) && !r2_v;
+        dec_r = line_start && disp && ready != 3'd0;
+        if (line_start) prev_disp <= disp;
+        inuse <= inuse + 3'(inc_u) - 3'(dec_u);
+        // an overrun leaves ready one ahead; each frame starts from 0
+        ready <= go_arm ? 3'd0 : ready + 3'(inc_r) - 3'(dec_r);
+        // (not before the first frame has been armed after reset)
+        if (line_start && disp && ready == 3'd0 && !inc_r && armed_once)
+          o_dbg_overruns <= o_dbg_overruns + 16'd1;
+      end
+      if (go_arm) begin
+        rarm       <= 1'b1;
+        rnext      <= first_ln;
+        armed_once <= 1'b1;
       end
       case (rs)
-        R_IDLE: if (go) begin
-          rline    <= next_line;
+        R_IDLE: if (can_start && !go_arm) begin
+          rline    <= rnext;
+          rnext    <= rnext + 8'd1;
+          if (rnext == last_ln) rarm <= 1'b0;
           pi       <= 3'd0;
           rcyc     <= 16'd0;
           rs       <= R_PASS;
@@ -501,6 +575,7 @@ module dy_video #(
           end else begin
             lp_start <= 1'b1;
             wbit     <= p_bit[pi[1:0]];
+            wsec     <= cfg.pbingo && pi[0];
             rs       <= R_PASS_WAIT;
           end
         end
@@ -529,12 +604,12 @@ module dy_video #(
       r2_v <= rs_en;
       if (rs_en) begin
         r2_x    <= rs_x;
-        r2_lv   <= lvalid[rs_x];
-        r2_lpen <= lpen[rs_x];
+        r2_lv   <= lvalid[rs_x] && (!cfg.pbingo || lvalid2[rs_x]);
+        r2_lpen <= cfg.pbingo ? {3'b001, lpen[rs_x][3:0], lpen2[rs_x]} : lpen[rs_x];
         r2_p1   <= lp1[rs_x];
         r2_p2   <= lp2[rs_x];
       end
-      if (r2_v) obuf[{rline[0], r2_x}] <= r2_out;
+      if (r2_v) obuf[{rline[1:0], r2_x}] <= r2_out;
     end
   end
 
@@ -564,7 +639,7 @@ module dy_video #(
       s1_vb <= !v_act;
       s1_hs <= (hcnt >= 9'd464) && (hcnt < 9'd496);
       s1_vs <= v_sync;
-      s1_raw <= obuf[{vcnt[0], ox}];   // unconditional: lets the buffer be a RAM
+      s1_raw <= obuf[{vcnt[1:0], ox}]; // unconditional: lets the buffer be a RAM
       s2_de <= s1_de;
       s2_hb <= s1_hb;
       s2_vb <= s1_vb;

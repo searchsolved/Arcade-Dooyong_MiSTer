@@ -1,4 +1,11 @@
-// Z80-family sprite engine, one line at a time (spec 10.1, 10.3).
+// Sprite engine, one line at a time: Z80 family (spec 10.1, 10.3) and, with
+// i_m68k, the 68000 family (spec 10.2; dy_render.py draw_68k_sprites):
+// 256 entries of 8 words processed from the LAST to the first, enable bit,
+// width x height tiles counted row-major, 9-bit X, signed 9-bit Y, packed
+// 4 bpp tiles (gfx_8x8x4_col_2x2_group_packed_msb), colour base 0, mask
+// class colour 0/15 (GFX_PMASK_2; GFX_PMASK_4 never matches on these games,
+// whose layers set priority 1 or 2 only). A hit is one tile row of a
+// sprite; the fetch stage expands it into width+1 tiles.
 //
 // Model: sim/oracle/dy_render.py draw_z80_sprites. Entries 0..127 of the
 // vblank copy are processed in order. The first sprite with a solid
@@ -27,8 +34,9 @@ module dy_spr_z80 (
     input  logic [7:0]  i_line,
     input  logic        i_flip,
     input  logic        i_bank,
-    input  logic [11:0] i_code_mask,
+    input  logic [13:0] i_code_mask,
     input  logic        i_f12, i_fheight, i_ysh_ft, i_ysh_bh,
+    input  logic        i_m68k,
     // sprite buffer
     output logic [9:0]  o_buf_addr,
     input  logic [31:0] i_buf_data,
@@ -55,12 +63,13 @@ module dy_spr_z80 (
   logic [11:0]  lbo [192];      // odd x
 
   logic [7:0]  line;
-  logic        flip, bank;
+  logic        flip, bank, m68k;
   logic        busy;
 
   // ---------------------------------------------------------------- scan
-  // hit record: {sx[10:0], fx, cls, colour[3:0], tile[11:0], trow[3:0]}
-  localparam int HW = 33;
+  // hit record: {cnt[3:0], sx[10:0], fx, cls, colour[3:0], tile[13:0], trow[3:0]}
+  // (cnt = tiles - 1 in the row, 0 on the Z80 games)
+  localparam int HW = 39;
   localparam int HD = 4;
   logic [HW-1:0] hq [HD];
   logic [1:0]    hq_wp, hq_rp;
@@ -69,12 +78,17 @@ module dy_spr_z80 (
   logic [HW-1:0] hq_d;
 
   logic        scan;            // issuing buffer reads
-  logic [7:0]  sc;              // read index: entry sc[7:1], word sc[0] ? 7 : 0
+  // read index. Z80: entry sc[7:1], word sc[0] ? 7 : 0. 68000: entry
+  // 255 - sc[9:2], 32-bit word sc[1:0] = sprite words {2k, 2k+1}
+  logic [9:0]  sc;
   logic        d_v;             // buffer data valid this clock for index d_sc
-  logic [7:0]  d_sc;
+  logic [9:0]  d_sc;
   logic [31:0] w0;
+  logic [15:0] m_w0, m_w1, m_w3, m_w4;
   wire         adv = scan && (hq_cnt < 3'(HD - 1));
-  assign o_buf_addr = {sc[7:1], sc[0] ? 3'd7 : 3'd0};
+  wire [7:0]   m_ent = 8'd255 - sc[9:2];
+  assign o_buf_addr = m68k ? {m_ent, sc[1:0]} : {sc[7:1], sc[0] ? 3'd7 : 3'd0};
+  wire         sc_last = m68k ? (sc == 10'd1023) : (sc[7:0] == 8'd255);
 
   // entry decode: w0 = bytes 0-3, ext = byte 0x1C on the bus now
   wire [7:0] b0 = w0[31:24], b1 = w0[23:16], b2 = w0[15:8], b3 = w0[7:0];
@@ -111,10 +125,29 @@ module dy_spr_z80 (
   wire [2:0]         k    = d[6:4];
   wire [2:0]         yidx = c_fy ? c_h - k : k;
   wire [3:0]         trow = c_fy ? ~d[3:0] : d[3:0];
-  wire [11:0]        tile = (c_code + {9'b0, yidx}) & i_code_mask;
+  wire [11:0]        tile = (c_code + {9'b0, yidx}) & i_code_mask[11:0];
   wire [3:0]         col  = b1[3:0];
-  assign hq_d    = {c_sx, c_fx, (col == 4'd0) || (col == 4'd15), col, tile, trow};
-  assign hq_push = d_v && d_sc[0] && hit;
+
+  // 68000 entry: w0 bit 0 enable, w1 width/height, w3 code, w4 X, w6 Y
+  // (on the bus now, [31:16]), w7 colour ([15:0])
+  wire [15:0]        m_w6 = i_buf_data[31:16];
+  wire [15:0]        m_w7 = i_buf_data[15:0];
+  wire [3:0]         m_w  = m_w1[3:0];
+  wire [3:0]         m_h  = m_w1[7:4];
+  wire signed [10:0] m_sx0 = $signed({2'b00, m_w4[8:0]});
+  wire signed [10:0] m_sy0 = $signed({{2{m_w6[8]}}, m_w6[8:0]});
+  wire signed [10:0] m_sx = flip ? 11'sd498 - $signed({3'b0, m_w, 4'b0}) - m_sx0 : m_sx0;
+  wire signed [10:0] m_sy = flip ? 11'sd240 - $signed({3'b0, m_h, 4'b0}) - m_sy0 : m_sy0;
+  wire signed [10:0] m_d  = $signed({3'b000, line}) - m_sy;
+  wire               m_hit = m_w0[0] && (m_d >= 0) && (m_d < $signed({2'b0, {1'b0, m_h} + 5'd1, 4'b0}));
+  wire [3:0]         m_k  = m_d[7:4];
+  wire [3:0]         m_yi = flip ? m_h - m_k : m_k;
+  wire [3:0]         m_tr = flip ? ~m_d[3:0] : m_d[3:0];
+  wire [13:0]        m_tile = 14'(m_w3 + {8'b0, m_yi} * ({1'b0, m_w} + 5'd1));
+  wire [3:0]         m_col = m_w7[3:0];
+  assign hq_d    = m68k ? {m_w, m_sx, flip, (m_col == 4'd0) || (m_col == 4'd15), m_col, m_tile, m_tr}
+                        : {4'd0, c_sx, c_fx, (col == 4'd0) || (col == 4'd15), col, {2'b00, tile}, trow};
+  assign hq_push = m68k ? (d_v && d_sc[1:0] == 2'd3 && m_hit) : (d_v && d_sc[0] && hit);
 
   // ---------------------------------------------------------------- fetch
   // record queue: hit + its two words; filled in order by the responses
@@ -127,12 +160,29 @@ module dy_spr_z80 (
   logic [2:0]    rq_cnt;                 // records allocated (fetching or waiting to draw)
   logic [2:0]    rq_ready;               // records with both words
   logic          f_half;                 // 0: issue word 0, 1: word 1
+  logic [3:0]    f_t;                    // tile within the head hit's row
   wire [HW-1:0]  fh = hq[hq_rp];
-  wire           f_req = (hq_cnt != 3'd0) && (f_half || rq_cnt < 3'(RD));
+  wire [3:0]     fh_cnt = fh[38:35];
+  wire signed [10:0] fh_sx = $signed(fh[34:24]);
+  wire           fh_fx  = fh[23];
+  // tile t of the row: code + t, at X + 16t, or X + 16(cnt - t) when flipped
+  wire [13:0]    ft_tile = (fh[17:4] + 14'(f_t)) & i_code_mask;   // wraps at the region size
+  wire [3:0]     ft_pos  = fh_fx && m68k ? fh_cnt - f_t : f_t;
+  wire signed [10:0] ft_sx = fh_sx + $signed({3'b0, ft_pos, 4'b0});
+  // tiles wholly outside x 64-447 are skipped without a fetch (68000 rows
+  // can be up to 16 tiles wide)
+  wire           ft_vis  = (ft_sx <= 11'sd447) && (ft_sx >= 11'sd49);
+  wire           ft_last = (f_t == fh_cnt);
+  wire           f_have  = (hq_cnt != 3'd0);
+  wire           f_skip  = f_have && !f_half && !ft_vis;
+  wire           f_req = f_have && ft_vis && (f_half || rq_cnt < 3'(RD));
   assign o_rom_req  = f_req;
-  assign o_rom_addr = SPR_BASE + {4'b0, fh[15:4], 7'b0} + {16'b0, f_half, 6'b0} + {17'b0, fh[3:0], 2'b0};
+  assign o_rom_addr = SPR_BASE + {2'b0, ft_tile, 7'b0} + {16'b0, f_half, 6'b0} + {17'b0, fh[3:0], 2'b0};
   wire           f_acc = f_req && i_rom_gnt;
-  assign hq_pop = f_acc && f_half;
+  wire           f_tile_done = (f_acc && f_half) || f_skip;
+  assign hq_pop = f_tile_done && ft_last;
+  // record pushed with the first word: this tile's X and code
+  wire [HW-1:0]  fh_rec = {fh[38:35], ft_sx, fh[23:18], ft_tile, fh[3:0]};
 
   // ---------------------------------------------------------------- draw
   // The head record is latched into registers when its draw starts (the
@@ -161,6 +211,13 @@ module dy_spr_z80 (
     else       return {w[5'd15 - kk], w[5'd11 - kk], w[5'd7 - kk],  w[5'd3 - kk]};
   endfunction
 
+  // packed 4 bpp, high nibble first; pixels 8-15 in the second word
+  function automatic logic [3:0] ppix(logic [31:0] a, logic [31:0] b, logic [3:0] t);
+    logic [31:0] w;
+    w = t[3] ? b : a;
+    return w[5'd31 - {t[2:0], 2'b00} -: 4];
+  endfunction
+
   logic [3:0]  pp   [2];
   logic signed [10:0] px [2];
   logic        pin  [2];
@@ -169,13 +226,13 @@ module dy_spr_z80 (
     for (int j = 0; j < 2; j++) begin
       logic [3:0] i;
       i      = di + 4'(j);
-      pp[j]  = spix(dg0, dg1, dfx ? ~i : i);
+      pp[j]  = m68k ? ppix(dg0, dg1, dfx ? ~i : i) : spix(dg0, dg1, dfx ? ~i : i);
       px[j]  = dsx + $signed({7'b0, i});
       pin[j] = (px[j] >= 11'sd64) && (px[j] <= 11'sd447) && pp[j] != 4'd15;
       pbx[j] = 9'(px[j] - 11'sd64);
     end
   end
-  wire [10:0] dpen = 11'(256) + {bank, 10'b0} + {3'b000, dcol, 4'b0};
+  wire [10:0] dpen = m68k ? {3'b000, dcol, 4'b0} : 11'(256) + {bank, 10'b0} + {3'b000, dcol, 4'b0};
 
   // ---------------------------------------------------------------- sequential
   always_ff @(posedge clk) begin
@@ -192,6 +249,7 @@ module dy_spr_z80 (
       rq_cnt   <= '0;
       rq_ready <= '0;
       f_half   <= 1'b0;
+      f_t      <= 4'd0;
       drawing  <= 1'b0;
       sa_act   <= 1'b0;
       o_done   <= 1'b0;
@@ -202,10 +260,13 @@ module dy_spr_z80 (
       d_v <= adv;
       if (adv) begin
         d_sc <= sc;
-        sc   <= sc + 8'd1;
-        if (sc == 8'd255) scan <= 1'b0;
+        sc   <= sc + 10'd1;
+        if (sc_last) scan <= 1'b0;
       end
       if (d_v && !d_sc[0]) w0 <= i_buf_data;
+      if (d_v && d_sc[1:0] == 2'd0) {m_w0, m_w1} <= i_buf_data;
+      if (d_v && d_sc[1:0] == 2'd1) m_w3 <= i_buf_data[15:0];
+      if (d_v && d_sc[1:0] == 2'd2) m_w4 <= i_buf_data[31:16];
       if (hq_push) begin
         hq[hq_wp] <= hq_d;
         hq_wp <= hq_wp + 2'd1;
@@ -217,10 +278,11 @@ module dy_spr_z80 (
       if (f_acc) begin
         f_half <= !f_half;
         if (!f_half) begin
-          rq[rq_wp] <= fh;
+          rq[rq_wp] <= fh_rec;
           rq_wp <= rq_wp + 2'd1;
         end
       end
+      if (f_tile_done) f_t <= ft_last ? 4'd0 : f_t + 4'd1;
       if (i_rom_rv) begin
         if (!rs_half) rq_g0[rs_wp] <= i_rom_data;
         else begin
@@ -236,10 +298,10 @@ module dy_spr_z80 (
       if (!drawing && rq_ready != 3'd0) begin
         drawing <= 1'b1;
         di      <= 4'd0;
-        dsx     <= dr[32:22];
-        dfx     <= dr[21];
-        dcls    <= dr[20];
-        dcol    <= dr[19:16];
+        dsx     <= dr[34:24];
+        dfx     <= dr[23];
+        dcls    <= dr[22];
+        dcol    <= dr[21:18];
         dg0     <= rq_g0[rq_rp];
         dg1     <= rq_g1[rq_rp];
         rq_rp   <= rq_rp + 2'd1;
@@ -267,8 +329,9 @@ module dy_spr_z80 (
         line <= i_line;
         flip <= i_flip;
         bank <= i_bank;
+        m68k <= i_m68k;
         scan <= 1'b1;
-        sc   <= 8'd0;
+        sc   <= 10'd0;
       end
       if (!i_start && !scan && !d_v && hq_cnt == 3'd0 && rq_cnt == 3'd0 && !drawing && !sa_act
           && busy && !o_done)

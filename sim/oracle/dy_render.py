@@ -464,7 +464,12 @@ def render(frame_dir, regions_set=None, override=None):
                 p, o = scroll_sample(pens, opq, regs[0], regs[3] | (regs[4] << 8), flip)
                 pb[o] = p[o]
             comp.append(pb)
-        bitmap[:] = 0x100 | (comp[0] << 4) | comp[1]
+        # a disabled layer leaves MAME's black-pen fill in its private bitmap
+        # and the combined index falls outside the palette (spec 11.9; no
+        # MAME reference, the games never disable these layers): the core
+        # and this model show the black pen there
+        ok = (comp[0] != black) & (comp[1] != black)
+        bitmap[:] = np.where(ok, 0x100 | ((comp[0] & 15) << 4) | (comp[1] & 15), black)
         prio[:] = 1
     elif mname == "primella":
         txpri = st.get("m_tx_pri", [0])[0]

@@ -7,10 +7,12 @@
 // and every o_de pixel is captured.
 //
 // Frame file (.dyf, written by sim/m1/replay.py):
-//   "DYF1", game u8, flags u8 (0 flip, 1 palette bank, 2 flytiger priority,
-//   3 lastday sprite disable), npal u16 LE, 24 tilemap register bytes
-//   (bg0, fg0, fg1 x reg 0-7), npal palette bytes (CPU order), 4096 text
-//   bytes (CPU offsets, per-game layout), 4096 sprite bytes.
+//   "DYF1", game u8, flags u8 (0 flip, 1 palette bank, 2 flytiger priority /
+//   primella text priority / 68000 bg2 priority, 3 lastday sprite disable),
+//   npal u16 LE, 32 tilemap register bytes (bg0, fg0, fg1, bg1 x reg 0-7),
+//   npal palette bytes (CPU order), 4096 text bytes (CPU offsets, per-game
+//   layout), 4096 sprite bytes (CPU order). The 68000 games (7-9) write
+//   palette and sprites as big-endian 16-bit words.
 // Output (.rgbp): 384 x 240 x 5 bytes: R, G, B, pen low, pen high
 // (pen bit 11 = black pen).
 // Primella family (game 5, 6; flags bit 2 = text below fg0): these games
@@ -129,11 +131,17 @@ int main(int argc, char **argv) {
 
     int bad = 0;
     // CPU writes with the pixel enable stopped
-    auto wr = [&](int which, int a, uint8_t d) {
-        top->i_cpu_addr = a; top->i_cpu_din = d;
+    const bool m68k = fb[4] >= 7 && fb[4] <= 9;
+    auto wr1 = [&](int which, int a, uint16_t d) {
+        top->i_cpu_addr = a; top->i_cpu_din = d; top->i_cpu_be = 3;
         top->i_pal_we = which == 0; top->i_txt_we = which == 1; top->i_spr_we = which == 2;
         tick(false);
         top->i_pal_we = top->i_txt_we = top->i_spr_we = 0;
+    };
+    // Z80: one byte per address; 68000: one word per even address
+    auto wrblk = [&](int which, const uint8_t *p, int n) {
+        if (m68k) for (int a = 0; a < n; a += 2) wr1(which, a, (p[a] << 8) | p[a + 1]);
+        else      for (int a = 0; a < n; a++) wr1(which, a, p[a]);
     };
     auto capture = [&](std::vector<uint8_t> &out, long npix) {
         for (long i = 0; i < npix; i++) {
@@ -170,15 +178,14 @@ int main(int argc, char **argv) {
         int flags = fb[5];
         int npal = fb[6] | (fb[7] << 8);
         const uint8_t *regs = &fb[8];
-        const uint8_t *pal = &fb[32];
+        const uint8_t *pal = &fb[40];
         const uint8_t *txt = pal + npal;
         const uint8_t *spr = txt + 4096;
         uint16_t over0 = top->o_dbg_overruns;
-        if (!prm)
-            for (int a = 0; a < npal; a++) wr(0, a, pal[a]);
-        for (int a = 0; a < 4096; a++) wr(1, a, txt[a]);
-        for (int a = 0; a < 4096; a++) wr(2, a, spr[a]);
-        for (int l = 0; l < 3; l++)
+        if (!prm) wrblk(0, pal, npal);
+        if (!m68k) wrblk(1, txt, 4096);
+        wrblk(2, spr, 4096);
+        for (int l = 0; l < 4; l++)
             for (int r = 0; r < 8; r++) {
                 top->i_tm_we = 1; top->i_tm_layer = l; top->i_tm_reg = r; top->i_tm_din = regs[l * 8 + r];
                 tick(false);
@@ -198,7 +205,7 @@ int main(int argc, char **argv) {
                 prev.insert(prev.end(), tail.begin(), tail.end());
                 finish(prev_in, prev_out, prev, prev_over0);
             }
-            for (int a = 0; a < npal; a++) wr(0, a, pal[a]);
+            wrblk(0, pal, npal);
             capture(out, 255L * 512);                     // lines 0-254
             prev = std::move(out);
             prev_in = fr.first;

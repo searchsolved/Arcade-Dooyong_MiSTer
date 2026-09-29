@@ -1,6 +1,9 @@
 // One tilemap pass over one visible line (384 px, screen x 64-447).
 //
-// Tile mode: a ROM tilemap layer (spec 7), 32x32 tiles, 1024 x 256 pixmap.
+// Tile mode: a ROM tilemap layer (spec 7), 32x32 tiles, 1024 x 256 pixmap,
+// or (i_t16, rshark/superx) 16x16 tiles, 1024 x 512 pixmap, with the colour
+// from the colour ROM (i_crom, spec 7.4: one byte per map entry, low nibble)
+// or forced to 0 (i_col0, popbingo).
 // Text mode: the RAM text layer (spec 8), 8x8 chars, 512 x 256 pixmap.
 //
 // Model: sim/oracle/dy_render.py rom_layer_pixmap / text_pixmap /
@@ -34,11 +37,17 @@ module dy_layer_pass (
     input  logic        i_bank,        // palette bank: pen + 1024
     // tile layer
     input  logic [22:0] i_gfx_base,
-    input  logic [9:0]  i_tile_mask,
+    input  logic [12:0] i_tile_mask,
     input  logic [22:0] i_map_base,
-    input  logic [15:0] i_map_mask,
+    input  logic [16:0] i_map_mask,
+    input  logic        i_t16,
+    input  logic        i_crom,
+    input  logic [22:0] i_crom_base,
+    input  logic        i_col0,
+    input  logic [7:0]  i_reg4,
+    input  logic [1:0]  i_layer,       // map-row cache slot (0 bg0, 1 fg0, 2 fg1, 3 bg1)
     input  logic        i_opaque,
-    input  logic [9:0]  i_cbase,
+    input  logic [10:0] i_cbase,
     input  logic [7:0]  i_reg0,
     input  logic [7:0]  i_reg1,
     input  logic [7:0]  i_reg3,
@@ -64,55 +73,86 @@ module dy_layer_pass (
     output logic        o_done
 );
 
-  localparam int NCOL = 13;            // 32-px columns a 384-px line can touch
+  localparam int NCOL = 25;            // columns a 384-px line can touch: 13 (32 px), 25 (16 px)
   localparam int QD   = 8;             // decoded-group queue depth
 
   // ---------------------------------------------------------------- setup
   logic        text, flip, bank, opaque, fmt_a, packed_tx;
-  logic [7:0]  ty;
+  logic [8:0]  ty;
   logic [9:0]  wmask;
   logic [22:0] gfx_base, map_base, tx_base;
   logic [16:0] tx_half;
-  logic [9:0]  tile_mask, cbase;
+  logic [12:0] tile_mask;
+  logic [10:0] cbase;
   logic [11:0] tx_mask;
-  logic [15:0] map_mask;
+  logic [16:0] map_mask;
   logic [7:0]  reg1;
+  logic        t16, crom, col0;
+  logic [22:0] crom_base;
+  logic [4:0]  ncol;
 
-  wire [7:0] scy   = i_text ? i_tx_yscroll : i_reg3;
+  // Y: 9 bits on the 512-line 16x16 maps (reg4 bit 0), else 8
+  wire [8:0] scy   = i_text ? {1'b0, i_tx_yscroll} : {i_t16 & i_reg4[0], i_reg3};
   wire [9:0] scx   = i_text ? 10'd0 : {2'b0, i_reg0};
   wire [9:0] wm    = i_text ? 10'd511 : 10'd1023;
   wire [9:0] tx0_c = (i_flip ? scx + 10'd447 : scx + 10'd64) & wm;
-  wire [7:0] ty_c  = i_flip ? 8'(scy + 8'd255 - i_line) : 8'(i_line + scy);
+  wire [8:0] ty_w  = i_flip ? 9'(scy + 9'd255 - {1'b0, i_line}) : 9'({1'b0, i_line} + scy);
+  wire [8:0] ty_c  = i_t16 ? ty_w : {1'b0, ty_w[7:0]};
+
+  wire [5:0] c0_c   = i_t16 ? tx0_c[9:4] : {1'b0, tx0_c[9:5]};
+  wire [4:0] trow_c = i_t16 ? ty_c[8:4] : {2'b00, ty_c[7:5]};
+  wire       tag_hit = tag_v[i_layer] && tag_c0[i_layer] == c0_c && tag_trow[i_layer] == trow_c
+                       && tag_reg1[i_layer] == i_reg1 && tag_flip[i_layer] == i_flip;
 
   // ---------------------------------------------------------------- issue
-  typedef enum logic [2:0] {I_IDLE, I_MAP, I_GRP, I_TXT, I_TXTW, I_TXB} istate_t;
+  typedef enum logic [2:0] {I_IDLE, I_MAP, I_COL, I_GRP, I_TXT, I_TXTW, I_TXB} istate_t;
   istate_t     is;
   logic [9:0]  ftx;                   // pixmap x of the current group's first pixel
   logic signed [10:0] frem;           // pixels still to be covered
-  logic [3:0]  mk;                    // map request index
-  logic [3:0]  gk;                    // column index of the current group
-  logic [4:0]  c0;                    // first column
-  logic [15:0] mapw [NCOL];
-  logic [NCOL-1:0] mapv;
+  logic [4:0]  mk;                    // map request index
+  logic [4:0]  gk;                    // column index of the current group
+  logic [5:0]  c0;                    // first column
+  // Map-row cache, one slot per layer: the map words (and colour ROM
+  // nibbles) of the columns a line touches only change when the map row, the
+  // first column, the 256-px page (reg1) or flip changes, i.e. every 16 or
+  // 32 lines. A pass whose tag matches skips the map requests (m1: rshark's
+  // four 16x16 layers otherwise need about 400 ROM reads per line).
+  logic [15:0] mapw [4][NCOL];
+  logic [3:0]  mapc [4][NCOL];        // colour ROM nibble per column (i_crom)
+  logic [NCOL-1:0] mapv, mapcv;
+  logic [1:0]  lay;
+  logic [3:0]  tag_v;
+  logic [5:0]  tag_c0   [4];
+  logic [4:0]  tag_trow [4];
+  logic [7:0]  tag_reg1 [4];
+  logic        tag_flip [4];
   logic [15:0] tattr;                 // text entry of the current char (split: for the 2nd request)
   logic [3:0]  inq;                   // groups requested and not yet consumed
 
-  wire [2:0]  trow  = ty[7:5];
-  wire [4:0]  tline = ty[4:0];
-  wire [4:0]  mcol  = flip ? c0 - 5'(mk) : c0 + 5'(mk);
-  wire [15:0] map_idx  = (16'({mcol, 3'b000}) + 16'(trow) + {2'b00, reg1, 6'b000000}) & map_mask;
-  wire [22:0] map_addr = map_base + {6'b0, map_idx, 1'b0};
+  // map index (spec 7.1): col * rows + row + reg1 * (256 / tile width) * rows
+  //   32x32: 32 columns x 8 rows, reg1 * 64; 16x16: 64 columns x 32 rows, reg1 * 512
+  wire [4:0]  trow  = t16 ? ty[8:4] : {2'b00, ty[7:5]};
+  wire [4:0]  tline = t16 ? {1'b0, ty[3:0]} : ty[4:0];
+  wire [5:0]  mcol  = flip ? c0 - 6'(mk) : c0 + 6'(mk);
+  wire [16:0] map_idx  = (t16 ? (17'({mcol, 5'b00000}) + 17'(trow) + {reg1, 9'b0})
+                              : (17'({mcol[4:0], 3'b000}) + 17'(trow[2:0]) + {3'b000, reg1, 6'b000000})) & map_mask;
+  wire [22:0] map_addr = map_base + {5'b0, map_idx, 1'b0};
+  wire [22:0] col_addr = crom_base + {6'b0, map_idx};
 
-  // current group, tile mode
-  wire [15:0] attr   = mapw[gk];
-  wire [9:0]  a_code = (fmt_a ? {attr[15], attr[8:0]} : attr[9:0]) & tile_mask;
-  wire [3:0]  a_col  = fmt_a ? attr[14:11] : attr[13:10];
+  // current group, tile mode. Format B code: attr & 0x1FFF / 0x7FF / 0x3FF
+  // by game (spec 7.3); the tile mask equals that width minus unused tiles
+  wire [15:0] attr   = mapw[lay][gk];
+  wire [12:0] a_code = (fmt_a ? {3'b000, attr[15], attr[8:0]} : attr[12:0]) & tile_mask;
+  wire [3:0]  a_col  = crom ? mapc[lay][gk] : col0 ? 4'd0 : fmt_a ? attr[14:11] : attr[13:10];
   wire        a_fx   = fmt_a ? attr[9]  : attr[14];
   wire        a_fy   = fmt_a ? attr[10] : attr[15];
-  wire [1:0]  grp    = ftx[4:3];
-  wire [1:0]  gsel   = a_fx ? ~grp : grp;
-  wire [4:0]  tl_sel = a_fy ? ~tline : tline;
-  wire [22:0] tile_addr = gfx_base + {4'b0, a_code, 9'b0} + {14'b0, gsel, 7'b0} + {16'b0, tl_sel, 2'b0};
+  wire [1:0]  grp    = t16 ? {1'b0, ftx[3]} : ftx[4:3];
+  wire [1:0]  gsel   = a_fx ? (t16 ? {1'b0, ~grp[0]} : ~grp) : grp;
+  wire [4:0]  tl_sel = a_fy ? (t16 ? {1'b0, ~tline[3:0]} : ~tline) : tline;
+  // 32x32 (tilelayout): 512 bytes per tile, 128 per 8-px column group, 4 per row
+  // 16x16 (spritelayout): 128 bytes per tile, px 8-15 at +64, 4 per row
+  wire [22:0] tile_addr = t16 ? gfx_base + {3'b0, a_code, 7'b0} + {16'b0, gsel[0], 6'b0} + {17'b0, tl_sel[3:0], 2'b0}
+                              : gfx_base + {1'b0, a_code, 9'b0} + {14'b0, gsel, 7'b0} + {16'b0, tl_sel, 2'b0};
 
   // current group, text mode (the entry is on the RAM bus in I_TXTW)
   wire [15:0] t_ent   = (is == I_TXTW) ? i_txt_data : tattr;
@@ -125,16 +165,17 @@ module dy_layer_pass (
   wire [3:0]  gcount   = flip ? 4'(ftx[2:0]) + 4'd1 : 4'd8 - 4'(ftx[2:0]);
   wire signed [10:0] frem_n = frem - $signed({7'b0, gcount});
   wire [9:0]  ftx_next = (flip ? {ftx[9:3], 3'b000} - 10'd1 : {ftx[9:3], 3'b111} + 10'd1) & wmask;
-  wire        col_step = flip ? (ftx[4:3] == 2'd0) : (ftx[4:3] == 2'd3);
+  wire        col_step = t16 ? (flip ? !ftx[3] : ftx[3]) : (flip ? (ftx[4:3] == 2'd0) : (ftx[4:3] == 2'd3));
 
-  // in-flight record per accepted request: {kind[1:0], colour[3:0], sel, idx[3:0]}
-  //   kind 0 map word (idx = table slot, sel = half), 1 tile or packed char
-  //   word (sel = tile X flip), 2 split plane-0/1 half, 3 split plane-2/3
-  //   half (sel = half)
+  // in-flight record per accepted request: {kind[1:0], colour[3:0], bsel[1:0], idx[4:0]}
+  //   kind 0 map word (idx = table slot, bsel[1] = half), 1 tile or packed
+  //   char word (bsel[0] = tile X flip), 2 split plane-0/1 half (text) or
+  //   colour ROM byte (tile mode; idx = slot, bsel = byte), 3 split plane-2/3
+  //   half (bsel[0] = half)
   localparam int IFD = 32;
-  logic [10:0] inflt [IFD];
+  logic [12:0] inflt [IFD];
   logic [4:0]  if_wp, if_rp;
-  logic [10:0] if_push_d;
+  logic [12:0] if_push_d;
   wire         room = (inq < 4'(QD));
 
   always_comb begin
@@ -145,22 +186,27 @@ module dy_layer_pass (
       I_MAP: begin
         o_rom_req  = 1'b1;
         o_rom_addr = {map_addr[22:2], 2'b00};
-        if_push_d  = {2'd0, 4'd0, map_addr[1], mk};
+        if_push_d  = {2'd0, 4'd0, map_addr[1], 1'b0, mk};
+      end
+      I_COL: begin
+        o_rom_req  = 1'b1;
+        o_rom_addr = {col_addr[22:2], 2'b00};
+        if_push_d  = {2'd2, 4'd0, col_addr[1:0], mk};
       end
       I_GRP: begin
-        o_rom_req  = mapv[gk] && room;
+        o_rom_req  = mapv[gk] && (!crom || mapcv[gk]) && room;
         o_rom_addr = tile_addr;
-        if_push_d  = {2'd1, a_col, a_fx, 4'd0};
+        if_push_d  = {2'd1, a_col, 1'b0, a_fx, 5'd0};
       end
       I_TXTW: begin
         o_rom_req  = room;
         o_rom_addr = {ch_addr[22:2], 2'b00};
-        if_push_d  = {packed_tx ? 2'd1 : 2'd2, t_ent[15:12], ch_addr[1], 4'd0};
+        if_push_d  = {packed_tx ? 2'd1 : 2'd2, t_ent[15:12], 1'b0, ch_addr[1], 5'd0};
       end
       I_TXB: begin
         o_rom_req  = 1'b1;
         o_rom_addr = {ch_addr2[22:2], 2'b00};
-        if_push_d  = {2'd3, t_ent[15:12], ch_addr2[1], 4'd0};
+        if_push_d  = {2'd3, t_ent[15:12], 1'b0, ch_addr2[1], 5'd0};
       end
       default: ;
     endcase
@@ -189,11 +235,14 @@ module dy_layer_pass (
     else       return {a[4'd7 - k],  a[4'd3 - k],  b[4'd7 - k],  b[4'd3 - k]};
   endfunction
 
-  wire [10:0] rrec  = inflt[if_rp];
-  wire [1:0]  rkind = rrec[10:9];
-  wire [3:0]  rcol  = rrec[8:5];
-  wire        rsel  = rrec[4];
+  wire [12:0] rrec  = inflt[if_rp];
+  wire [1:0]  rkind = rrec[12:11];
+  wire [3:0]  rcol  = rrec[10:7];
+  wire [1:0]  rbsel = rrec[6:5];
+  wire [4:0]  ridx  = rrec[4:0];
+  wire        rsel  = (rkind == 2'd0) ? rbsel[1] : rbsel[0];
   wire [15:0] rhalf = rsel ? i_rom_data[15:0] : i_rom_data[31:16];
+  wire [7:0]  rbyte = i_rom_data[5'd31 - {rbsel, 3'b000} -: 8];
   wire        q_push = i_rom_rv && (rkind == 2'd1 || rkind == 2'd3);
 
   always_comb begin
@@ -219,16 +268,25 @@ module dy_layer_pass (
       q_cnt <= '0;
       inq   <= '0;
       mapv  <= '0;
+      mapcv <= '0;
+      tag_v <= '0;
     end else begin
       case (is)
         I_MAP: if (acc) begin
-          mk <= mk + 4'd1;
-          if (mk == 4'(NCOL - 1)) is <= I_GRP;
+          if (crom) is <= I_COL;
+          else begin
+            mk <= mk + 5'd1;
+            if (mk == ncol - 5'd1) is <= I_GRP;
+          end
+        end
+        I_COL: if (acc) begin
+          mk <= mk + 5'd1;
+          is <= (mk == ncol - 5'd1) ? I_GRP : I_MAP;
         end
         I_GRP, I_TXB: if (acc) begin
           ftx  <= ftx_next;
           frem <= frem_n;
-          if (!text && col_step) gk <= gk + 4'd1;
+          if (!text && col_step) gk <= gk + 5'd1;
           is   <= (frem_n > 0) ? (text ? I_TXT : I_GRP) : I_IDLE;
         end
         I_TXT: is <= I_TXTW;                       // text RAM address registered
@@ -250,10 +308,16 @@ module dy_layer_pass (
       if (i_rom_rv) begin
         if_rp <= if_rp + 5'd1;
         if (rkind == 2'd0) begin
-          mapw[rrec[3:0]] <= rhalf;
-          mapv[rrec[3:0]] <= 1'b1;
+          mapw[lay][ridx] <= rhalf;
+          mapv[ridx] <= 1'b1;
         end
-        if (rkind == 2'd2) split_a <= rhalf;
+        if (rkind == 2'd2) begin
+          if (text) split_a <= rhalf;
+          else begin
+            mapc[lay][ridx] <= rbyte[3:0];
+            mapcv[ridx] <= 1'b1;
+          end
+        end
       end
       if (q_push) begin
         q[q_wp] <= q_d;
@@ -279,15 +343,37 @@ module dy_layer_pass (
         tile_mask <= i_tile_mask;
         tx_mask   <= i_tx_mask;
         map_mask  <= i_map_mask;
-        cbase     <= i_text ? 10'd0 : i_cbase;
+        cbase     <= i_text ? 11'd0 : i_cbase;
         reg1      <= i_reg1;
+        t16       <= i_t16;
+        crom      <= i_crom && !i_text;
+        col0      <= i_col0;
+        crom_base <= i_crom_base;
+        ncol      <= i_t16 ? 5'd25 : 5'd13;
         ftx       <= tx0_c;
         frem      <= 11'sd384;
-        c0        <= tx0_c[9:5];
-        mk        <= 4'd0;
-        gk        <= 4'd0;
-        mapv      <= '0;
-        is        <= i_text ? I_TXT : I_MAP;
+        c0        <= c0_c;
+        mk        <= 5'd0;
+        gk        <= 5'd0;
+        lay       <= i_layer;
+        if (i_text) begin
+          mapv  <= '0;
+          mapcv <= '0;
+          is    <= I_TXT;
+        end else if (tag_hit) begin
+          mapv  <= '1;
+          mapcv <= '1;
+          is    <= I_GRP;
+        end else begin
+          mapv  <= '0;
+          mapcv <= '0;
+          is    <= I_MAP;
+          tag_v[i_layer]    <= 1'b1;
+          tag_c0[i_layer]   <= c0_c;
+          tag_trow[i_layer] <= trow_c;
+          tag_reg1[i_layer] <= i_reg1;
+          tag_flip[i_layer] <= i_flip;
+        end
       end
     end
   end
@@ -318,7 +404,7 @@ module dy_layer_pass (
       end else if (step) begin
         o_lb_we  <= opaque || pix != 4'd15;
         o_lb_x   <= px;
-        o_lb_pen <= {bank, cbase + {2'b00, hcol, pix}};
+        o_lb_pen <= {bank, 10'b0} + cbase + {3'b000, hcol, pix};
         ptx      <= (flip ? ptx - 10'd1 : ptx + 10'd1) & wmask;
         px       <= px + 9'd1;
         if (px == 9'd383) begin

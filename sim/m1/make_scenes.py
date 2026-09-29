@@ -14,7 +14,11 @@ frame):
                    Y-shift positions, multi-tile heights, colour 0/15
                    sprites, the other map format, scroll extremes, flip;
                    primella family (sadari, gundl94): flip, both text
-                   priorities, layer disable, format A, scroll extremes.
+                   priorities, layer disable, format A, scroll extremes;
+                   68000 family (superx, rshark, popbingo): flip, both
+                   bg2 priorities, layer disable, 512-line Y scroll,
+                   sprite edge cases (X near 0x1F0, negative Y, 16x16-tile
+                   sprites, colour 0/15).
   <set>_random   : fully random registers, flags, palette, text and sprite
                    RAM (fixed seed), every Z80 game the RTL supports.
 
@@ -29,11 +33,15 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 OUT_MAME = HERE.parent / "mame" / "out"
 TAGS = {"bg0": "bg1", "fg0": "fg1", "fg1": "fg2"}
+TAGS68 = {"bg0": "bg1", "bg1": "bg2", "fg0": "fg1", "fg1": "fg2"}
+M68K = ("superx", "rshark", "popbingo")
 LAYERS = {"lastday": ("bg0", "fg0"), "gulfstrm": ("bg0", "fg0"), "pollux": ("bg0", "fg0"),
           "flytiger": ("bg0", "fg0"), "bluehawk": ("bg0", "fg0", "fg1"),
-          "sadari": ("bg0", "fg0"), "gundl94": ("bg0", "fg0")}
+          "sadari": ("bg0", "fg0"), "gundl94": ("bg0", "fg0"),
+          "superx": ("bg0", "bg1", "fg0", "fg1"), "rshark": ("bg0", "bg1", "fg0", "fg1"),
+          "popbingo": ("bg0", "bg1")}
 PAL_BYTES = {"lastday": 2048, "gulfstrm": 2048, "pollux": 4096, "flytiger": 4096, "bluehawk": 2048,
-             "sadari": 2048, "gundl94": 2048}
+             "sadari": 2048, "gundl94": 2048, "superx": 4096, "rshark": 4096, "popbingo": 4096}
 PRIMELLA = ("sadari", "gundl94")
 SEED = 20260928
 N_RANDOM = 60
@@ -43,12 +51,14 @@ class Scene:
     def __init__(self, src):
         self.st = json.loads((src / "state.json").read_text())
         self.pal = bytearray((src / "palette.bin").read_bytes())
-        self.txt = bytearray((src / "text.bin").read_bytes())
+        tp = src / "text.bin"                    # none on the 68000 games
+        self.txt = bytearray(tp.read_bytes()) if tp.exists() else None
         sp = src / "spriteram_buf.bin"          # none on the primella family
         self.spr = bytearray(sp.read_bytes()) if sp.exists() else None
 
     def regs(self, layer):
-        return self.st[f"{TAGS[layer]}.m_registers"]
+        tags = TAGS68 if self.st["machine"] in M68K else TAGS
+        return self.st[f"{tags[layer]}.m_registers"]
 
     def set_bank(self, on):
         self.st["m_palette_bank"] = [1 if on else 0]
@@ -60,7 +70,8 @@ class Scene:
         d.mkdir(parents=True, exist_ok=True)
         (d / "state.json").write_text(json.dumps(self.st))
         (d / "palette.bin").write_bytes(bytes(self.pal))
-        (d / "text.bin").write_bytes(bytes(self.txt))
+        if self.txt is not None:
+            (d / "text.bin").write_bytes(bytes(self.txt))
         if self.spr is not None:
             (d / "spriteram_buf.bin").write_bytes(bytes(self.spr))
 
@@ -70,7 +81,8 @@ def src_frame(run, n):
 
 
 def targeted(out):
-    scenes = {"flytiger": [], "bluehawk": [], "sadari": [], "gundl94": []}
+    scenes = {"flytiger": [], "bluehawk": [], "sadari": [], "gundl94": [], "superx": [], "rshark": [],
+              "popbingo": []}
 
     # flytiger demo play frames (2000-2599 consecutive capture)
     for n in (2000, 2200, 2400):
@@ -185,6 +197,55 @@ def targeted(out):
                     a0, a1, a3 = (a0 * 7 + 13) & 0xFF, (a1 * 5 + 3) & 0xFF, (a3 * 3 + 1) & 0xFF
                 scenes[set_].append((f"scroll_{r0:02x}{r1:02x}{r3:02x}_f{flip}", s))
 
+    # 68000 family
+    import struct
+    for set_ in M68K:
+        for n in (1500, 4500, 7500):
+            base = src_frame(f"extra_{set_}", n)
+            for flip in (0, 1):
+                for pri in (0, 1):
+                    s = Scene(base)
+                    s.st["m_flip_screen_x"] = [flip]
+                    s.st["m_bg2_priority"] = [pri]
+                    scenes[set_].append((f"f{flip}_pri{pri}_{n}", s))
+            for layer in LAYERS[set_]:
+                s = Scene(base)
+                s.regs(layer)[6] |= 0x10
+                scenes[set_].append((f"off_{layer}_{n}", s))
+            for flip in (0, 1):             # 512-line Y scroll (reg4 bit 0) and big reg1
+                s = Scene(base)
+                s.st["m_flip_screen_x"] = [flip]
+                for k, layer in enumerate(LAYERS[set_]):
+                    rg = s.regs(layer)
+                    rg[4] = 1
+                    rg[3] = (37 * (k + 1) + n) & 0xFF
+                    rg[1] = (0xF3 + 29 * k) & 0xFF
+                scenes[set_].append((f"yhi_f{flip}_{n}", s))
+        # sprite placement edge cases
+        for flip in (0, 1):
+            s = Scene(src_frame(f"extra_{set_}", 3000))
+            s.st["m_flip_screen_x"] = [flip]
+            spr = bytearray(4096)
+            for i in range(256):
+                w = [0] * 8
+                w[0] = 1 if i % 7 else 0                              # some disabled
+                if i < 16:                                            # X near 0x1F0 (9-bit X)
+                    x, y, ww, hh = 0x1E8 + i, 20 + 12 * i, i % 4, i % 3
+                elif i < 40:                                          # negative Y, tall
+                    x, y, ww, hh = 60 + 15 * (i - 16), (0x200 - 40 - 3 * i) & 0x1FF, 1, 5 + i % 4
+                elif i < 48:                                          # 16x16-tile giants
+                    x, y, ww, hh = 30 + 40 * (i - 40), 10 + 20 * (i - 40), 15, 15
+                else:
+                    x, y, ww, hh = (i * 53) & 0x1FF, (i * 29) & 0x1FF, i % 5, (i // 5) % 4
+                w[1] = (hh << 4) | ww
+                w[3] = (i * 331) & 0xFFFF
+                w[4] = x
+                w[6] = y
+                w[7] = (0, 15, 3, 9)[i % 4]
+                spr[16 * i:16 * i + 16] = struct.pack(">8H", *w)
+            s.spr = spr
+            scenes[set_].append((f"sprpos_f{flip}", s))
+
     for set_, lst in scenes.items():
         run = out / f"{set_}_targeted" / "frames"
         for i, (name, s) in enumerate(lst):
@@ -196,18 +257,24 @@ def targeted(out):
 
 def randoms(out):
     rng = random.Random(SEED)
-    for set_ in ("lastday", "gulfstrm", "pollux", "flytiger", "bluehawk") + PRIMELLA:
+    for set_ in ("lastday", "gulfstrm", "pollux", "flytiger", "bluehawk") + PRIMELLA + M68K:
         run = out / f"{set_}_random" / "frames"
         prm = set_ in PRIMELLA
+        m68 = set_ in M68K
         for i in range(N_RANDOM):
             st = {"set": set_, "machine": "primella" if prm else set_, "frame": i + 1,
                   "width": 384, "height": 256 if prm else 240}
             bank = rng.random() < 0.5 if set_ in ("pollux", "flytiger") else False
+            tags = TAGS68 if m68 else TAGS
             for layer in LAYERS[set_]:
                 r = [rng.randrange(256) for _ in range(8)] + [0] * 8
-                r[6] = (r[6] & ~0x30) | rng.choice((0x00, 0x20, 0x20, 0x10 if rng.random() < 0.15 else 0x20))
-                st[f"{TAGS[layer]}.m_registers"] = r
-                st[f"{TAGS[layer]}.m_palette_bank"] = [64 if bank else 0]
+                if m68:     # format B only (O9), occasional disable
+                    r[6] = 0x10 if rng.random() < 0.1 else 0x00
+                    r[4] = rng.randrange(2)
+                else:
+                    r[6] = (r[6] & ~0x30) | rng.choice((0x00, 0x20, 0x20, 0x10 if rng.random() < 0.15 else 0x20))
+                st[f"{tags[layer]}.m_registers"] = r
+                st[f"{tags[layer]}.m_palette_bank"] = [64 if bank else 0]
             st["tx.m_palette_bank"] = [64 if bank else 0]
             st["m_palette_bank"] = [int(bank)]
             st["m_flytiger_pri"] = [rng.randrange(2) if set_ == "flytiger" else 0]
@@ -215,13 +282,27 @@ def randoms(out):
             st["m_sprites_disabled"] = [int(rng.random() < 0.2) if set_ == "lastday" else 0]
             if prm:
                 st["m_tx_pri"] = [rng.randrange(2)]
+            if m68:
+                st["m_bg2_priority"] = [rng.randrange(2)]
             d = run / f"{i + 1:06d}"
             d.mkdir(parents=True, exist_ok=True)
             (d / "state.json").write_text(json.dumps(st))
             (d / "palette.bin").write_bytes(bytes(rng.randrange(256) for _ in range(PAL_BYTES[set_])))
             # text: mostly transparent-ish random chars so layers below show
-            (d / "text.bin").write_bytes(bytes(rng.randrange(256) for _ in range(4096)))
+            txt = bytes(rng.randrange(256) for _ in range(4096))
+            if not m68:
+                (d / "text.bin").write_bytes(txt)
             spr = bytearray(rng.randrange(256) for _ in range(4096))
+            if m68:
+                # random words, but realistic density: about a quarter of
+                # the 256 entries enabled, up to 4 x 4 tiles (all 256 at up
+                # to 16 x 16 tiles is far beyond any line budget and any game)
+                import struct
+                for k in range(256):
+                    w = list(struct.unpack(">8H", spr[16 * k:16 * k + 16]))
+                    w[0] = (w[0] & ~1) | int(rng.random() < 0.25)
+                    w[1] = (w[1] & 0xFF00) | (rng.randrange(4) << 4) | rng.randrange(4)
+                    spr[16 * k:16 * k + 16] = struct.pack(">8H", *w)
             if not prm:
                 (d / "spriteram_buf.bin").write_bytes(bytes(spr))
         print(f"{set_}_random: {N_RANDOM} scenes")

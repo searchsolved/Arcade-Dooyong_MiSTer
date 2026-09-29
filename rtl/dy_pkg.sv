@@ -4,8 +4,8 @@
 // MRA cannot create an illegal configuration (PLAN 4.1). Addresses are byte
 // addresses in the fixed SDRAM layout of PLAN 4.3 / tools/build_regions.py.
 // Z80 family: lastday, gulfstrm, pollux, flytiger, bluehawk and the
-// primella family (sadari; gundl94 and its clone primella). The 68000 games
-// come later.
+// primella family (sadari; gundl94 and its clone primella); 68000 family:
+// superx, rshark, popbingo.
 
 package dy_pkg;
 
@@ -16,6 +16,13 @@ package dy_pkg;
   localparam logic [3:0] G_BLUEHAWK = 4'd4;
   localparam logic [3:0] G_SADARI   = 4'd5;   // primella machine config
   localparam logic [3:0] G_GUNDL94  = 4'd6;   // gundl94, primella (same regions)
+  localparam logic [3:0] G_SUPERX   = 4'd7;   // 68000 family (rshark_state)
+  localparam logic [3:0] G_RSHARK   = 4'd8;
+  localparam logic [3:0] G_POPBINGO = 4'd9;
+
+  function automatic logic is_m68k(logic [3:0] g);
+    return g == G_SUPERX || g == G_RSHARK || g == G_POPBINGO;
+  endfunction
 
   // primella family (spec 3.6, 5.3, 11.6): no sprites, 256 visible lines,
   // vblank at line 256, text priority from ctrl bit 3
@@ -28,35 +35,42 @@ package dy_pkg;
   localparam logic [22:0] SD_AUX    = 23'h0C0000;   // separate map ROMs
   localparam logic [22:0] SD_SPRITE = 23'h140000;
   localparam logic [22:0] SD_BG0    = 23'h340000;
+  localparam logic [22:0] SD_BG1    = 23'h440000;
   localparam logic [22:0] SD_FG0    = 23'h540000;
   localparam logic [22:0] SD_FG1    = 23'h640000;
 
   typedef struct packed {
     logic        present;
     logic [22:0] gfx_base;
-    logic [9:0]  tile_mask;   // decoded tiles - 1 (region bytes / 512 - 1)
+    logic [12:0] tile_mask;   // decoded tiles - 1 (region bytes / bytes per tile - 1)
     logic [22:0] map_base;    // byte address of map word 0 (region + 2 * offset)
-    logic [15:0] map_mask;    // map length in words - 1
+    logic [16:0] map_mask;    // map length in words - 1
     logic        opaque;      // no transparent pen (bg0 on most games)
-    logic [9:0]  cbase;       // colour base pen
+    logic [10:0] cbase;       // colour base pen
+    logic        t16;         // 16x16 tiles, 64 x 32 map (rshark, superx)
+    logic        crom;        // colour from the colour ROM (spec 7.4)
+    logic [22:0] crom_base;   // colour ROM byte address of map entry 0
+    logic        col0;        // colour 0 (popbingo)
   } layer_cfg_t;
 
   typedef struct packed {
-    layer_cfg_t  bg0, fg0, fg1;
+    layer_cfg_t  bg0, fg0, fg1, bg1;
+    logic        pbingo;      // popbingo: bg0/bg1 combined into 0x100 | bg0 << 4 | bg1 (spec 11.9)
     logic        tx_packed;   // 1: gfx_8x8x4_packed_msb; 0: lastday split planes
     logic [16:0] tx_half;     // byte offset of planes 2-3 (split layout)
     logic [11:0] tx_mask;     // chars - 1
     logic        tx_lane0;    // CPU layout: 1 = offset bit 0 selects lane (bluehawk)
     logic [7:0]  tx_yscroll;  // 8 on lastday/gulfstrm (negated when flipped)
-    logic [11:0] spr_mask;    // sprite codes - 1
+    logic [13:0] spr_mask;    // sprite codes - 1
     logic        spr_12bit, spr_height, spr_ysh_ft, spr_ysh_bh;
     logic        pal_444;     // xBGR_444 (lastday); else xRGB_555
   } cfg_t;
 
-  function automatic layer_cfg_t lay(logic [22:0] gfx, logic [9:0] tmask,
-                                     logic [22:0] map, logic [15:0] mmask,
-                                     logic opq, logic [9:0] cbase);
+  function automatic layer_cfg_t lay(logic [22:0] gfx, logic [12:0] tmask,
+                                     logic [22:0] map, logic [16:0] mmask,
+                                     logic opq, logic [10:0] cbase);
     layer_cfg_t l;
+    l = '0;
     l.present   = 1'b1;
     l.gfx_base  = gfx;
     l.tile_mask = tmask;
@@ -109,6 +123,32 @@ package dy_pkg;
         c.spr_12bit  = 1'b1;
         c.spr_height = 1'b1;
         c.spr_ysh_bh = 1'b1;
+      end
+      G_SUPERX, G_RSHARK: begin
+        // four 16x16 layers, map = the first 0x20000 words of each tile
+        // region, colour from tmap_hi (SD_AUX) at 0x60000/0x40000/0x20000/0
+        // (spec 7.4, 7.5); 8192 tiles per 1 MB region
+        c.bg0 = lay(SD_BG0, 13'h1FFF, SD_BG0, 17'h1FFFF, 1'b1, 11'd1024);
+        c.bg1 = lay(SD_BG1, 13'h1FFF, SD_BG1, 17'h1FFFF, 1'b0, 11'd768);
+        c.fg0 = lay(SD_FG0, 13'h1FFF, SD_FG0, 17'h1FFFF, 1'b0, 11'd512);
+        c.fg1 = lay(SD_FG1, 13'h1FFF, SD_FG1, 17'h1FFFF, 1'b0, 11'd256);
+        {c.bg0.t16, c.bg1.t16, c.fg0.t16, c.fg1.t16} = 4'hF;
+        {c.bg0.crom, c.bg1.crom, c.fg0.crom, c.fg1.crom} = 4'hF;
+        c.spr_mask      = 14'h3FFF;          // 2 MB, 16384 tiles
+        c.bg0.crom_base = SD_AUX + 23'h60000;
+        c.bg1.crom_base = SD_AUX + 23'h40000;
+        c.fg0.crom_base = SD_AUX + 23'h20000;
+        c.fg1.crom_base = SD_AUX;
+      end
+      G_POPBINGO: begin
+        // two opaque 32x32 layers, 0x4000-word maps at the region start,
+        // code 11 bits (2048 tiles), colour 0, raw pens combined
+        c.bg0 = lay(SD_BG0, 13'h7FF, SD_BG0, 17'h3FFF, 1'b1, 11'd0);
+        c.bg1 = lay(SD_BG1, 13'h7FF, SD_BG1, 17'h3FFF, 1'b1, 11'd0);
+        c.bg0.col0 = 1'b1;
+        c.bg1.col0 = 1'b1;
+        c.pbingo   = 1'b1;
+        c.spr_mask = 14'h1FFF;               // 1 MB, 8192 tiles
       end
       G_SADARI, G_GUNDL94: begin
         // map in the top 32 KB of each tile region (word offset -0x4000,

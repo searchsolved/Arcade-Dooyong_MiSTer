@@ -200,10 +200,13 @@ def line_check(fd, cap, n, rgb, machine, regw=()):
         # before a write see the old value, cells read after it the new one.
         # Primella line 0 is rendered during the last line before our dump,
         # so it reads the dumped text.
-        if prm and y == 0:
-            kts = range(0, 1)
-        else:
-            kts = range(upto(tw, _pos(y - 1, 0, machine)), upto(tw, _pos(y, 0, machine)) + 1)
+        # the renderer runs up to three lines ahead (dy_video run-ahead), so
+        # line y's text is read somewhere between the start of line y-4 and
+        # the start of line y; primella lines before 4 may be read before our
+        # dump at vblank N (the games write text after the vblank IRQ)
+        lo = y - 4 if (prm and y >= 4) or (not prm) else None
+        t_lo = upto(tw, _pos(lo, 0, machine)) if lo is not None else 0
+        kts = range(t_lo, upto(tw, _pos(y, 0, machine)) + 1)
         kps = range(upto(pw, _pos(y, 0, machine)),
                     upto(pw, _pos(y + 1, 0, machine) if y < y1 else 256 * 512) + 1)
         ok = np.zeros(384, dtype=bool)
