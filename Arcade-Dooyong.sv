@@ -156,13 +156,14 @@ wire [9:0] joy1 = joystick_1[9:0] | {k2_b3, 1'b0, k_co2, k_st2, k2_b2, k2_b1, k2
 // ---------------------------------------------------------------------------
 // inputs, active low (spec 9.2). MiSTer joystick: 0 R, 1 L, 2 D, 3 U, then
 // the J1 list: 4 Button 1, 5 Button 2, 6 Start, 7 Coin, 8 Service,
-// 9 Button 3. P1/P2: 0 R, 1 L, 2 D, 3 U, 4 B1, 5 B2, 6 B3 on sadari only
+// 9 Button 3. P1/P2: 0 R, 1 L, 2 D, 3 U, 4 B1, 5 B2, 6 B3 on sadari and the
+// 68000 games only
 // (spec 9.2; unknown bits read 1 elsewhere). SYSTEM: 0 Coin1, 1 Start1,
 // 2 Coin2, 3 Start2, 4 Service. (lastday/gulfstrm/pollux use other SYSTEM
 // orders; they are not in this build.)
 // ---------------------------------------------------------------------------
 wire [3:0] game;
-wire       b3_on = (game == 4'd5);   // sadari
+wire       b3_on = (game == 4'd5) || (game >= 4'd7 && game <= 4'd9);   // sadari; 68000 games (P1/P2 bit 6)
 wire [7:0] p1  = ~{1'b0, b3_on & joy0[9], joy0[5:4], joy0[3:0]};
 wire [7:0] p2  = ~{1'b0, b3_on & joy1[9], joy1[5:4], joy1[3:0]};
 wire [7:0] sys = ~{3'b000, joy0[8] | joy1[8], joy1[6], joy1[7], joy0[6], joy0[7]};
@@ -197,7 +198,7 @@ dy_board #(.CPU_DIV(12), .CLK_HZ(96000000), .V_TOTAL(260), .PIX_NUM(1), .PIX_DEN
 // ---------------------------------------------------------------------------
 // flytiger and bluehawk are ROT270 in MAME: turn the picture 90 degrees
 // counter-clockwise to stand it upright
-wire vertical   = (game <= 4'd4);        // lastday..bluehawk ROT270; primella family ROT0
+wire vertical   = (game <= 4'd4) || game == 4'd7 || game == 4'd8;   // lastday..bluehawk, superx, rshark ROT270
 wire no_rotate  = status[2] | direct_video | ~vertical;
 wire rotate_ccw = 1'b1;
 wire flip       = 1'b0;

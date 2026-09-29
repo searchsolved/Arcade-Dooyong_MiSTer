@@ -173,7 +173,27 @@ int main(int argc, char **argv) {
     std::vector<uint8_t> prev;
     std::string prev_in, prev_out;
     uint16_t prev_over0 = 0;
-    for (auto &fr : frames) {
+    // 68000 games: the frame shown after vblank N draws the sprite list
+    // copied at vblank N-1 (dy_video, two buffer halves), so each frame's
+    // sprites are written one frame early: a warm-up frame copies frame 0's
+    // list, then at frame i's load the list of frame i+1 goes in.
+    auto spr_of = [&](const std::string &p, std::vector<uint8_t> &dst) {
+        std::vector<uint8_t> save = fb;
+        bool ok = load(p);
+        int np = fb[6] | (fb[7] << 8);
+        dst.assign(fb.begin() + 40 + np + 4096, fb.begin() + 40 + np + 8192);
+        fb = save;
+        return ok;
+    };
+    if (m68k) {
+        std::vector<uint8_t> s0;
+        spr_of(frames[0].first, s0);
+        wrblk(2, s0.data(), 4096);
+        std::vector<uint8_t> junk;
+        capture(junk, 256L * 512);                   // copy at line 248, back to line 248
+    }
+    for (size_t fi = 0; fi < frames.size(); fi++) {
+        auto &fr = frames[fi];
         if (!load(fr.first)) { fprintf(stderr, "bad frame %s\n", fr.first.c_str()); return 2; }
         int flags = fb[5];
         int npal = fb[6] | (fb[7] << 8);
@@ -184,7 +204,12 @@ int main(int argc, char **argv) {
         uint16_t over0 = top->o_dbg_overruns;
         if (!prm) wrblk(0, pal, npal);
         if (!m68k) wrblk(1, txt, 4096);
-        wrblk(2, spr, 4096);
+        if (!m68k) wrblk(2, spr, 4096);
+        else if (fi + 1 < frames.size()) {
+            std::vector<uint8_t> sn;
+            spr_of(frames[fi + 1].first, sn);
+            wrblk(2, sn.data(), 4096);
+        }
         for (int l = 0; l < 4; l++)
             for (int r = 0; r < 8; r++) {
                 top->i_tm_we = 1; top->i_tm_layer = l; top->i_tm_reg = r; top->i_tm_din = regs[l * 8 + r];

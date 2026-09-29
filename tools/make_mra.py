@@ -31,10 +31,12 @@ sys.path.insert(0, str(Path(__file__).parent))
 from romdefs import ROOT, parse_driver, zip_index               # noqa: E402
 from build_regions import SDRAM_SLOTS, REGION_SLOT, OUT as REGIONS  # noqa: E402
 
-GAME_ID = {"lastday": 0, "gulfstrm": 1, "pollux": 2, "flytiger": 3, "bluehawk": 4}
+GAME_ID = {"lastday": 0, "gulfstrm": 1, "pollux": 2, "flytiger": 3, "bluehawk": 4,
+           "superx": 7, "rshark": 8, "popbingo": 9}
 # primella machine config: sadari 5; gundl94 and its clone primella 6
 PRIMELLA_ID = {"sadari": 5, "gundl94": 6}
-SUPPORTED = ("lastday", "gulfstrm", "pollux", "flytiger", "bluehawk", "primella")      # machines the RBF runs so far
+SUPPORTED = ("lastday", "gulfstrm", "pollux", "flytiger", "bluehawk", "primella",
+             "superx", "rshark", "popbingo")      # machines the RBF runs so far
 RBF = "Dooyong"
 OUTDIR = ROOT / "releases" / "mra"
 
@@ -251,11 +253,14 @@ def switches(machine, parent):
     SWB:1-2 Show Girl, SWB:5 cabinet, sadari also SWB:7 Girl Show Point
     (dooyong.cpp 1261-1292), default DSWB 0xFD."""
     prm = machine == "primella"
-    sw = ET.Element("switches", default="FF,FD" if prm else "FF,FF")
+    pb = machine == "popbingo"
+    # 68000 games: the 16-bit DSW port is {SWB, SWA} = {byte 1, byte 0}, the
+    # same bit numbering as the Z80 DSWA/DSWB pair (dooyong.cpp 1098-1172)
+    sw = ET.Element("switches", default="FF,FD" if prm else "FB,FF" if pb else "FF,FF")
     d = [
-        ("Service Mode", "0", "On,Off", None),
+        ("Unknown" if machine == "superx" else "Service Mode", "0", "On,Off", None),
         ("Coin Type", "1", "B,A", None),
-        ("Demo Sounds", "2", "Off,On", None),
+        ("Demo Sounds", "2", "On,Off" if pb else "Off,On", None),
         ("Flip Screen", "3", "On,Off", None),
         # coin tables for coin type A (the default); MRA DIPs cannot follow
         # MAME's PORT_CONDITION on coin type B
@@ -264,6 +269,8 @@ def switches(machine, parent):
     ]
     if prm:
         d.append(("Show Girl", "8,9", "Skip Skip Skip,Dress Half Naked,Dress Half Half,Dress Dress Dress", None))
+    elif pb:
+        d.append(("VS Max Round", "8", "1,3", None))
     else:
         d.append(("Lives", "8,9", "1,4,2,3", None))
     d.append(("Difficulty", "10,11", "Hardest,Hard,Easy,Normal", None))
@@ -273,13 +280,16 @@ def switches(machine, parent):
         d.append(("Girl Show Point", "14", "Asia,Other Country", None))
     if machine == "flytiger":
         d.append(("Auto Fire", "14", "Off,On", None))
+    if pb:                                        # dooyong.cpp 1322-1333
+        d.append(("Blocks Don't Drop", "14", "On,Off", None))
     if machine == "lastday":                     # dooyong.cpp 1183-1191
         d.append(("Bonus Life", "12,13", "None,280000,Every 240000,Every 200000", None))
         d.append(("Speed", "14", "Low,High", None))
     if machine == "gulfstrm":                    # dooyong.cpp 1207-1215
         d.append(("Bonus Life", "12,13", "None,Every 500000,Every 400000,Every 300000", None))
         d.append(("Power Rise(?)", "14", "2,1", None))
-    d.append(("Allow Continue", "15", "No,Yes", None))
+    if not pb:                                    # popbingo SWB:8 is unknown
+        d.append(("Allow Continue", "15", "No,Yes", None))
     for name, bits, ids, vals in d:
         e = ET.SubElement(sw, "dip", name=name, bits=bits, ids=ids)
         if vals:

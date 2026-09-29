@@ -23,6 +23,14 @@
 // 2 Coin2, 3 Start2, 4 Service1, active low). lastday, gulfstrm and pollux
 // read their own bit orders; they are rebuilt here, including the vblank
 // input of gulfstrm and pollux (bit 4, low during MAME's 2.5 ms vblank).
+//
+// 68000 family (superx, rshark, popbingo; spec 3.7, 5.2): fx68k main CPU at
+// 8 MHz (10 MHz on popbingo) from two-phase fractional enables, no wait
+// states (DTACK within the cycle, as MAME's memory model), IRQ5 at line 248
+// and IRQ6 at line 120, both HOLD_LINE, autovectored. The T80 is held in
+// reset on these games and fx68k on the others. One 128K x 16 program ROM
+// and one 32K x 16 work RAM serve both CPU families (the Z80 uses byte
+// lanes: its 4 KB work RAM at offset 0, the primella 1 KB RAM at 0x1000).
 
 module dy_sys #(
     parameter int CPU_DIV = 12,
@@ -35,9 +43,9 @@ module dy_sys #(
     input  logic        rst_n,
     input  logic [3:0]  i_game,
 
-    // program ROM download: 0x00000-0x1FFFF main CPU, 0x20000-0x2FFFF sound CPU
+    // program ROM download: 0x00000-0x3FFFF main CPU, 0x40000-0x4FFFF sound CPU
     input  logic        i_dl_we,
-    input  logic [17:0] i_dl_addr,
+    input  logic [18:0] i_dl_addr,
     input  logic [7:0]  i_dl_data,
 
     // M6295 sample ROM (256 KB, SDRAM 0x080000)
@@ -120,8 +128,10 @@ module dy_sys #(
   logic        rd_n /* verilator public_flat_rd */;
   logic        int_n;
 
+  wire m68k = is_m68k(i_game);
+
   T80s u_cpu (
-    .RESET_n(rst_n), .CLK(clk), .CEN(ce_cpu),
+    .RESET_n(rst_n && !m68k), .CLK(clk), .CEN(ce_cpu),
     .WAIT_n(1'b1), .INT_n(int_n), .NMI_n(1'b1), .BUSRQ_n(1'b1), .OUT0(1'b0),
     .DI(cpu_din),
     .M1_n(m1_n), .MREQ_n(mreq_n), .IORQ_n(iorq_n), .RD_n(rd_n), .WR_n(wr_n),
@@ -211,25 +221,49 @@ module dy_sys #(
   wire wr /* verilator public_flat_rd */ = mem && !wr_n && !wr_q;
 
   // ================================================================ memories
+  // 68000 main CPU signals (declared here, used from the memories on)
+  logic        m_rw, m_asn, m_ldsn, m_udsn, m_fc0, m_fc1, m_fc2;
+  logic [23:1] m_a /* verilator public_flat_rd */;
+  logic [15:0] m_dout /* verilator public_flat_rd */;
+  logic [15:0] m_din;
+  wire  [19:0] m_ba = {m_a[19:1], 1'b0};         // global_mask(0xfffff)
+  logic        m_ram_we, m_pbx, m_ctrl_w, m_latch_w;
+  logic [15:0] m_ram_off;
+
+  // program ROM, 16-bit words, byte 2n = high byte (68000 order; the Z80
+  // reads byte lanes)
   logic [2:0]  bank;
-  logic [7:0]  rom_q, wram_q;
+  logic [7:0]  rom_q, wram_q, xram_q;
+  logic [15:0] rom16_q;
   wire  [16:0] rom_a = (sel == D_BANK) ? {bank, A[13:0]} : {2'b00, A[14:0]};
-  dy_dpram #(.AW(17), .DW(8)) u_rom (
+  logic        rom_lane_q;
+  dy_dpram #(.AW(17), .DW(16)) u_rom (
     .clk(clk),
-    .addr_a(i_dl_addr[16:0]), .d_a(i_dl_data), .we_a(i_dl_we && !i_dl_addr[17]), .be_a(1'b1), .q_a(),
-    .addr_b(rom_a), .q_b(rom_q));
+    .addr_a(i_dl_addr[17:1]), .d_a({i_dl_data, i_dl_data}), .we_a(i_dl_we && !i_dl_addr[18]),
+    .be_a(i_dl_addr[0] ? 2'b01 : 2'b10), .q_a(),
+    .addr_b(m68k ? m_a[17:1] : {1'b0, rom_a[16:1]}), .q_b(rom16_q));
+  always_ff @(posedge clk) rom_lane_q <= rom_a[0];
+  assign rom_q = rom_lane_q ? rom16_q[7:0] : rom16_q[15:8];
 
-  dy_dpram #(.AW(12), .DW(8)) u_wram (
+  // work RAM, 16-bit words. Z80: 4 KB work RAM at byte 0, primella
+  // 0xD000-0xD3FF at byte 0x1000. 68000: the 64 KB work RAM window (the
+  // sprite hole 0xD000-0xDFFF is in dy_video), popbingo 0x0DC000 RAM in
+  // that hole.
+  wire  [15:0] z_ram_off = (sel == D_XRAM) ? {6'b000100, A[9:0]} : {4'b0000, A[11:0]};
+  wire  [15:0] ram_off   = m68k ? m_ram_off : z_ram_off;
+  logic [15:0] ram16_q;
+  logic        ram_lane_q;
+  dy_dpram #(.AW(15), .DW(16)) u_ram (
     .clk(clk),
-    .addr_a(A[11:0]), .d_a(cpu_dout), .we_a(wr && sel == D_WRAM), .be_a(1'b1), .q_a(wram_q),
-    .addr_b(12'd0), .q_b());
-
-  // primella family 0xD000-0xD3FF
-  logic [7:0] xram_q;
-  dy_dpram #(.AW(10), .DW(8)) u_xram (
-    .clk(clk),
-    .addr_a(A[9:0]), .d_a(cpu_dout), .we_a(wr && sel == D_XRAM), .be_a(1'b1), .q_a(xram_q),
-    .addr_b(10'd0), .q_b());
+    .addr_a(ram_off[15:1]),
+    .d_a(m68k ? m_dout : {cpu_dout, cpu_dout}),
+    .we_a(m68k ? m_ram_we : (wr && (sel == D_WRAM || sel == D_XRAM))),
+    .be_a(m68k ? {~m_udsn, ~m_ldsn} : (z_ram_off[0] ? 2'b01 : 2'b10)),
+    .q_a(ram16_q),
+    .addr_b(15'd0), .q_b());
+  always_ff @(posedge clk) ram_lane_q <= z_ram_off[0];
+  assign wram_q = ram_lane_q ? ram16_q[7:0] : ram16_q[15:8];
+  assign xram_q = wram_q;
 
   // ================================================================ registers
   logic [7:0] ctrl;
@@ -254,6 +288,9 @@ module dy_sys #(
     end else if (is_pr) begin
       flip     = ctrl[4];
       pri_swap = ctrl[3];               // text layer below fg0 (spec 11.6)
+    end else if (m68k) begin
+      flip     = ctrl[0];
+      pri_swap = ctrl[4];               // bg2_priority (spec 11.7)
     end
   end
 
@@ -375,9 +412,14 @@ module dy_sys #(
         if (cpu_dout[7:3] != 5'd0) o_dbg_bank_hi <= o_dbg_bank_hi + 16'd1;
       end
       if (io_ctrl_w) ctrl <= cpu_dout;
+      if (m_ctrl_w)  ctrl <= m_dout[7:0];
       if (io_ctrl_w && is_pr) bank <= cpu_dout[2:0];   // ctrl bits 0-2 (spec 3.1)
       if (io_latch_w) begin
         o_snd_latch    <= cpu_dout;
+        o_snd_latch_we <= 1'b1;
+      end
+      if (m_latch_w) begin
+        o_snd_latch    <= m_dout[7:0];
         o_snd_latch_we <= 1'b1;
       end
       if (wr && (sel == D_ROM || sel == D_BANK)) o_dbg_rom_writes <= o_dbg_rom_writes + 16'd1;
@@ -385,26 +427,160 @@ module dy_sys #(
     if (!m1_n && mem) o_cpu_pc_dbg <= A;
   end
 
+  // ================================================================ 68000 main CPU
+  // two-phase enables at twice the CPU clock (8 MHz; 10 MHz on popbingo),
+  // fractional so 10 MHz works from any system clock
+  localparam int F68    = 8000000;
+  localparam int F68_PB = 10000000;
+  logic [27:0] m_acc;
+  logic        m_ph, en_phi1, en_phi2;
+  wire  [27:0] m_step = 28'(2 * ((i_game == G_POPBINGO) ? F68_PB : F68));
+  always_ff @(posedge clk) begin
+    en_phi1 <= 1'b0;
+    en_phi2 <= 1'b0;
+    if (!rst_n || !m68k) begin
+      m_acc <= '0;
+      m_ph  <= 1'b0;
+    end else if (m_acc + m_step >= 28'(CLK_HZ)) begin
+      m_acc <= m_acc + m_step - 28'(CLK_HZ);
+      m_ph  <= !m_ph;
+      if (m_ph) en_phi2 <= 1'b1;
+      else      en_phi1 <= 1'b1;
+    end else
+      m_acc <= m_acc + m_step;
+  end
+
+  logic        m_dtackn, m_vpan;
+  logic [2:0]  m_ipl;
+  fx68k u_m68k (
+    .clk(clk), .HALTn(1'b1),
+    .extReset(!rst_n || !m68k), .pwrUp(!rst_n || !m68k),
+    .enPhi1(en_phi1), .enPhi2(en_phi2),
+    .eRWn(m_rw), .ASn(m_asn), .LDSn(m_ldsn), .UDSn(m_udsn),
+    .E(), .VMAn(),
+    .FC0(m_fc0), .FC1(m_fc1), .FC2(m_fc2),
+    .BGn(), .oRESETn(), .oHALTEDn(),
+    .DTACKn(m_dtackn), .VPAn(m_vpan),
+    .BERRn(1'b1), .BRn(1'b1), .BGACKn(1'b1),
+    .IPL0n(~m_ipl[0]), .IPL1n(~m_ipl[1]), .IPL2n(~m_ipl[2]),
+    .iEdb(m_din), .oEdb(m_dout), .eab(m_a));
+
+  // interrupts: IRQ6 (line 120) and IRQ5 (line 248), HOLD_LINE until the
+  // acknowledge cycle of that level; autovectored (spec 5.2)
+  wire  m_iack = m_fc2 && m_fc1 && m_fc0 && !m_asn;
+  logic irq5_p, irq6_p;
+  logic irq6_line;
+  always_ff @(posedge clk) begin
+    if (!rst_n || !m68k) begin
+      irq5_p <= 1'b0;
+      irq6_p <= 1'b0;
+    end else begin
+      if (vbl_irq)   irq5_p <= 1'b1;
+      if (irq6_line) irq6_p <= 1'b1;
+      if (m_iack && m_a[3:1] == 3'd5) irq5_p <= 1'b0;
+      if (m_iack && m_a[3:1] == 3'd6) irq6_p <= 1'b0;
+    end
+  end
+  assign m_ipl  = irq6_p ? 3'd6 : (irq5_p ? 3'd5 : 3'd0);
+  assign m_vpan = !m_iack;
+
+  // decode (spec 3.7): rshark/popbingo I/O at 0x0C0000 and RAM at 0x040000,
+  // superx at 0x080000 and 0x0D0000
+  wire        m_sx   = (i_game == G_SUPERX);
+  wire        m_pb   = (i_game == G_POPBINGO);
+  wire [3:0]  m_ioh  = m_sx ? 4'h8 : 4'hC;
+  wire [3:0]  m_ramh = m_sx ? 4'hD : 4'h4;
+  wire        m_selrom = m_ba < 20'h40000;
+  wire        m_inram  = m_ba[19:16] == m_ramh;
+  wire        m_selspr = m_inram && m_ba[15:12] == 4'hD;
+  assign      m_pbx    = m_pb && m_ba[19:5] == 15'(20'h0DC000 >> 5);
+  wire        m_selram = (m_inram && !m_selspr) || m_pbx;
+  wire        m_inio   = m_ba[19:16] == m_ioh;
+  wire [15:0] m_off    = m_ba[15:0];
+  wire        m_selpal = m_inio && m_off[15:12] == 4'h8;
+  assign      m_ram_off = m_pbx ? {11'h680, m_ba[4:0]} : m_ba[15:0];   // popbingo 0x0DC000 -> 0xD000
+
+  // bus: writes are acknowledged at once and performed when a data strobe
+  // appears; reads take the registered memory output. DTACK arrives well
+  // inside S4, so no wait states.
+  typedef enum logic [1:0] {MB_IDLE, MB_RD, MB_ACK} mbst_t;
+  mbst_t       mbst;
+  logic        m_wdone;
+  logic [15:0] m_rdata;
+  wire         m_ds    = !(m_udsn && m_ldsn);
+  wire         m_wstb /* verilator public_flat_rd */ = (mbst == MB_ACK) && !m_rw && m_ds && !m_wdone;
+  assign m_dtackn = !(mbst == MB_ACK);
+  assign m_din    = m_rdata;
+  always_ff @(posedge clk) begin
+    if (!rst_n || !m68k) begin
+      mbst    <= MB_IDLE;
+      m_wdone <= 1'b0;
+    end else begin
+      case (mbst)
+        MB_IDLE: if (!m_asn && !m_iack) begin
+          if (!m_rw) begin
+            mbst    <= MB_ACK;
+            m_wdone <= 1'b0;
+          end else if (m_ds) mbst <= MB_RD;
+        end
+        MB_RD: mbst <= MB_ACK;     // memory address presented last clock
+        MB_ACK: begin
+          if (m_wstb) m_wdone <= 1'b1;
+          if (m_asn) mbst <= MB_IDLE;
+        end
+        default: mbst <= MB_IDLE;
+      endcase
+    end
+  end
+
+  // read mux (one clock after the address: BRAM outputs)
+  logic [15:0] m_spr_q16;
+  always_ff @(posedge clk) begin
+    if (mbst == MB_RD) begin
+      if (m_selrom)       m_rdata <= rom16_q;
+      else if (m_selram)  m_rdata <= ram16_q;
+      else if (m_selspr)  m_rdata <= m_spr_q16;
+      else if (m_inio && m_off == 16'h0002) m_rdata <= {i_dswb, i_dswa};
+      else if (m_inio && m_off == 16'h0004) m_rdata <= {i_p2, i_p1};
+      else if (m_inio && m_off == 16'h0006) m_rdata <= {8'h00, i_system};   // upper byte reads 0 (MAME)
+      else                m_rdata <= 16'h0000;                              // unmapped (and palette) read 0
+    end
+  end
+
+  // writes
+  assign m_ram_we  = m_wstb && m_selram;
+  wire   m_spr_we  = m_wstb && m_selspr;
+  wire   m_pal_we  = m_wstb && m_selpal;
+  wire   m_lds_w   = m_wstb && !m_ldsn && m_inio;         // byte registers on the low lane
+  assign m_latch_w = m_lds_w && m_off == 16'h0012;        // 0x..0013
+  assign m_ctrl_w  = m_lds_w && m_off == 16'h0014;        // 0x..0015
+  // tilemap registers: umask16(0x00ff), register N at base + 2N + 1
+  wire   m_tm_bg   = m_lds_w && m_off[15:5] == 11'h200;   // 0x4000-0x401F: bg0, bg1
+  wire   m_tm_fg   = m_lds_w && m_off[15:5] == 11'h600 && !m_pb;   // 0xC000-0xC01F: fg0, fg1
+  wire   m_tm_we   = m_tm_bg || m_tm_fg;
+  wire [1:0] m_tm_layer = m_tm_bg ? (m_off[4] ? 2'd3 : 2'd0) : (m_off[4] ? 2'd2 : 2'd1);
+
   // ================================================================ video
   wire [11:0] pal_a = (is_ft || is_px) ? {pal_bank, A[10:0]} : {1'b0, A[10:0]};
-  wire        v_pal_we = wr && sel == D_PAL;
-  wire        v_txt_we = wr && sel == D_TXT;
-  wire        v_spr_we = wr && sel == D_SPR;
-  wire [11:0] v_addr   = (sel == D_PAL) ? pal_a : A[11:0];
+  wire        v_pal_we = m68k ? m_pal_we : (wr && sel == D_PAL);
+  wire        v_txt_we = !m68k && wr && sel == D_TXT;
+  wire        v_spr_we = m68k ? m_spr_we : (wr && sel == D_SPR);
+  wire [11:0] v_addr   = m68k ? m_ba[11:0] : ((sel == D_PAL) ? pal_a : A[11:0]);
   logic [7:0] pal_q, txt_q, spr_q;
 
   dy_video #(.V_TOTAL(V_TOTAL)) u_video (
     .clk(clk), .rst_n(rst_n), .ce_pix(ce_pix), .i_game(i_game),
-    .i_cpu_addr(v_addr), .i_cpu_din(cpu_dout),
+    .i_cpu_addr(v_addr), .i_cpu_din(m68k ? m_dout : {8'h00, cpu_dout}), .i_cpu_be({~m_udsn, ~m_ldsn}),
     .i_pal_we(v_pal_we), .i_txt_we(v_txt_we), .i_spr_we(v_spr_we),
-    .o_pal_dout(pal_q), .o_txt_dout(txt_q), .o_spr_dout(spr_q),
-    .i_tm_we(tm_we), .i_tm_layer(tm_layer), .i_tm_reg(A[2:0]), .i_tm_din(cpu_dout),
+    .o_pal_dout(pal_q), .o_txt_dout(txt_q), .o_spr_dout(spr_q), .o_spr_dout16(m_spr_q16),
+    .i_tm_we(m68k ? m_tm_we : tm_we), .i_tm_layer(m68k ? m_tm_layer : tm_layer),
+    .i_tm_reg(m68k ? m_off[3:1] : A[2:0]), .i_tm_din(m68k ? m_dout[7:0] : cpu_dout),
     .i_flip(flip), .i_pal_bank(pal_bank), .i_pri_swap(pri_swap), .i_spr_disable(spr_dis),
     .o_rom_req(o_rom_req), .o_rom_addr(o_rom_addr),
     .i_rom_gnt(i_rom_gnt), .i_rom_rv(i_rom_rv), .i_rom_data(i_rom_data),
     .o_r(o_r), .o_g(o_g), .o_b(o_b), .o_de(o_de),
     .o_hblank(o_hblank), .o_vblank(o_vblank), .o_hs(o_hs), .o_vs(o_vs),
-    .o_pen(o_pen), .o_vbl_irq(vbl_irq),
+    .o_pen(o_pen), .o_vbl_irq(vbl_irq), .o_irq6(irq6_line),
     .o_dbg_overruns(o_dbg_overruns), .o_dbg_maxcyc(o_dbg_maxcyc));
   assign o_vbl_irq = vbl_irq;
   assign o_ce_pix  = ce_pix;
@@ -452,9 +628,9 @@ module dy_sys #(
   // (lastday) or 1.5 MHz, sound CPU 8 MHz on gulfstrm.
   dy_snd #(.CPU_DIV(2 * CPU_DIV), .YM_NUM(3579545), .YM4_NUM(4000000), .YM_DEN(CLK_HZ),
            .OKI_DIV(8 * CPU_DIV)) u_snd (
-    .clk(clk), .rst_n(rst_n), .i_ym_4m(is_pr),
+    .clk(clk), .rst_n(rst_n), .i_ym_4m(is_pr || m68k),
     .i_opn(is_ld || is_gp), .i_opn_map_ld(is_ld || is_gs), .i_opn_15(is_gp), .i_cpu_fast(is_gs),
-    .i_dl_we(i_dl_we && i_dl_addr[17]), .i_dl_addr(i_dl_addr[15:0]), .i_dl_data(i_dl_data),
+    .i_dl_we(i_dl_we && i_dl_addr[18]), .i_dl_addr(i_dl_addr[15:0]), .i_dl_data(i_dl_data),
     .i_latch(o_snd_latch),
     .o_oki_addr(o_oki_addr), .i_oki_data(i_oki_data), .i_oki_ok(i_oki_ok),
     .o_audio(o_audio), .o_ym_l(), .o_ym_r(), .o_oki(),

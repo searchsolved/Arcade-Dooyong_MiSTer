@@ -244,10 +244,23 @@ module dy_video #(
   logic [31:0] cp_word;
   logic [9:0]  sb_raddr;
   logic [31:0] sb_q, sb_qa_unused;
-  dy_dpram #(.AW(10), .DW(32)) u_spr_buf (
+  // Two halves on the 68000 games: the copy at vblank N goes into half
+  // bsel and the frame shown after vblank N draws from the other half, the
+  // copy of vblank N-1. Their scroll registers are written at lines 120-135
+  // (IRQ6), so the registers latched at line 7 are frame N's; MAME's frame
+  // N pairs them with the sprite list of vblank N-1, which is also what the
+  // board shows below the write line. The Z80 games write their registers
+  // in vblank and use one half (their latch picks up frame N+1's registers,
+  // which MAME pairs with the copy of vblank N).
+  logic bsel;
+  always_ff @(posedge clk) begin
+    if (!rst_n)                 bsel <= 1'b0;
+    else if (vbl_start && m68k) bsel <= !bsel;
+  end
+  dy_dpram #(.AW(11), .DW(32)) u_spr_buf (
     .clk(clk),
-    .addr_a(cp_waddr), .d_a(cp_word), .we_a(cp_we), .be_a(4'hF), .q_a(sb_qa_unused),
-    .addr_b(sb_raddr), .q_b(sb_q));
+    .addr_a({bsel, cp_waddr}), .d_a(cp_word), .we_a(cp_we), .be_a(4'hF), .q_a(sb_qa_unused),
+    .addr_b({m68k & ~bsel, sb_raddr}), .q_b(sb_q));
 
   // "saved during this copy" bitmap, cleared at vblank. A CPU write needs a
   // save if its word is at or beyond the copy counter and not already

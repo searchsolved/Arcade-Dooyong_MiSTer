@@ -37,7 +37,7 @@ from PIL import Image
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "oracle"))
 from dy_render import MACHINES, render  # noqa: E402
 
-ROT270 = {"lastday", "gulfstrm", "pollux", "flytiger", "bluehawk"}
+ROT270 = {"lastday", "gulfstrm", "pollux", "flytiger", "bluehawk", "superx", "rshark"}
 
 
 def load_ours(p, h=240):
@@ -79,7 +79,7 @@ def latched_state(st, regw, machine):
     during the active lines put back to its value before the change, i.e.
     what our latch took at line 7."""
     st = json.loads(json.dumps(st))
-    if machine == "primella":
+    if machine in ("primella", "superx", "rshark", "popbingo"):
         # latched at line 255, MAME draws at line 256: the games write their
         # registers in lines 0-10 (spec 5.4), nothing to put back
         return st
@@ -257,7 +257,11 @@ def main(argv):
     first = next(p for p in sorted(frames.iterdir()) if (p / "state.json").exists())
     machine0 = json.loads((first / "state.json").read_text())["machine"]
     prm = machine0 == "primella"
-    off = int(argv[argv.index("--offset") + 1]) if "--offset" in argv else (0 if prm else 1)
+    # displayed frame N = MAME frame N on the primella family (latch at the
+    # last line) and the 68000 games (registers of frame N, sprite list of
+    # vblank N-1); N+1 on the other Z80 games (latch after their vblank writes)
+    m68 = machine0 in ("superx", "rshark", "popbingo")
+    off = int(argv[argv.index("--offset") + 1]) if "--offset" in argv else (0 if prm or m68 else 1)
     search = "--search" in argv
     quiet = "--quiet" in argv
     regs_by_frame = None

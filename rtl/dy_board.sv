@@ -5,7 +5,7 @@
 // ioctl indices (MRA):
 //   0    ROM stream = the SDRAM image of PLAN 4.3 from byte 0
 //        (tools/make_mra.py proves each MRA reproduces it). The main and
-//        sound program ranges (0x000000-0x01FFFF, 0x040000-0x04FFFF) are
+//        sound program ranges (0x000000-0x03FFFF, 0x040000-0x04FFFF) are
 //        also copied into dy_sys's program-ROM BRAMs as they stream past.
 //   1    game ID byte (dy_pkg G_*), sampled while the core is held in reset
 //   254  DIP switches: byte 0 = DSWA, byte 1 = DSWB (raw port values)
@@ -81,9 +81,9 @@ module dy_board #(
   assign o_game = game;
 
   // program ROMs into BRAM: main 0x000000-0x01FFFF, sound 0x040000-0x04FFFF
-  wire        dl_main  = rom_wr && i_ioctl_addr[26:17] == 10'd0;
-  wire        dl_snd   = rom_wr && i_ioctl_addr[26:16] == 11'h004;
-  wire [17:0] dl_baddr = dl_snd ? {2'b10, i_ioctl_addr[15:0]} : {1'b0, i_ioctl_addr[16:0]};
+  wire        dl_main  = rom_wr && i_ioctl_addr[26:18] == 9'd0;          // 0x000000-0x03FFFF
+  wire        dl_snd   = rom_wr && i_ioctl_addr[26:16] == 11'h004;       // 0x040000-0x04FFFF
+  wire [18:0] dl_baddr = dl_snd ? {3'b100, i_ioctl_addr[15:0]} : {1'b0, i_ioctl_addr[17:0]};
 
   // ------------------------------------------------------------------ SDRAM
   logic        sd_ready, dl_busy;

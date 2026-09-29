@@ -100,6 +100,8 @@ int main(int argc, char **argv) {
     std::string sndf = plus("snd", ""), wavf = plus("wav", "");
     FILE *fsnd = sndf.empty() ? nullptr : fopen(sndf.c_str(), "w");
     FILE *fwav = wavf.empty() ? nullptr : fopen(wavf.c_str(), "wb");
+    std::string m68f = plus("m68w", "");
+    FILE *fm68 = m68f.empty() ? nullptr : fopen(m68f.c_str(), "w");
     std::string wtf = plus("wtrace", "");
     FILE *fwt = wtf.empty() ? nullptr : fopen(wtf.c_str(), "w");
     int wtaddr = strtol(plus("wtaddr", "0").c_str(), nullptr, 16) & 0xFFFE;
@@ -144,12 +146,12 @@ int main(int argc, char **argv) {
     top->rst_n = 0;
     top->i_dl_we = 0;
     for (int i = 0; i < 8; i++) tick();
-    for (int a = 0; a < 0x20000; a++) {            // main CPU region at SDRAM 0
+    for (int a = 0; a < 0x40000; a++) {            // main CPU region at SDRAM 0 (256 KB for the 68000)
         top->i_dl_we = 1; top->i_dl_addr = a; top->i_dl_data = sdram[a];
         tick();
     }
     for (int a = 0; a < 0x10000; a++) {            // sound CPU region at SDRAM 0x040000
-        top->i_dl_we = 1; top->i_dl_addr = 0x20000 + a; top->i_dl_data = sdram[0x40000 + a];
+        top->i_dl_we = 1; top->i_dl_addr = 0x40000 + a; top->i_dl_data = sdram[0x40000 + a];
         tick();
     }
     top->i_dl_we = 0;
@@ -207,6 +209,12 @@ int main(int argc, char **argv) {
                         r->dy_sys__DOT__u_video__DOT__hcnt, (int)r->dy_sys__DOT__vbl_in, top->o_cpu_pc_dbg);
             rdp = rdn;
         }
+        if (fm68 && r->dy_sys__DOT__m_wstb) {       // +m68w=FILE: 68000 writes to I/O (0x080000-0x0CFFFF)
+            uint32_t ba = (r->dy_sys__DOT__m_a << 1) & 0xFFFFF;
+            if (ba >= 0x80000 && ba < 0xD0000)
+                fprintf(fm68, "%ld %d %d %05x %04x\n", frame, r->dy_sys__DOT__u_video__DOT__vcnt,
+                        r->dy_sys__DOT__u_video__DOT__hcnt, ba, r->dy_sys__DOT__m_dout);
+        }
         if (fwt && r->dy_sys__DOT__wr && (r->dy_sys__DOT__A & 0xFFFE) == wtaddr)   // +wtrace=FILE +wtaddr=HEX
             fprintf(fwt, "%ld %d %d %04x %02x pc %04x\n", frame, r->dy_sys__DOT__u_video__DOT__vcnt,
                     r->dy_sys__DOT__u_video__DOT__hcnt, r->dy_sys__DOT__A, r->dy_sys__DOT__cpu_dout,
@@ -250,9 +258,10 @@ int main(int argc, char **argv) {
                 char fn[64];
                 std::vector<uint8_t> b;
                 b.resize(4096);
-                for (int i = 0; i < 2048; i++) {        // palette, CPU byte order
+                for (int i = 0; i < 2048; i++) {        // palette, CPU byte order (68000: big-endian)
                     uint16_t w = r->dy_sys__DOT__u_video__DOT__u_pal__DOT__mem[i];
-                    b[2 * i] = w & 0xFF; b[2 * i + 1] = w >> 8;
+                    if (game >= 7 && game <= 9) { b[2 * i] = w >> 8; b[2 * i + 1] = w & 0xFF; }
+                    else                        { b[2 * i] = w & 0xFF; b[2 * i + 1] = w >> 8; }
                 }
                 snprintf(fn, sizeof fn, "%s/%06ld.pal", out.c_str(), frame); dump(fn, b.data(), 4096);
                 for (int i = 0; i < 2048; i++) {        // text, logical big-endian words
@@ -265,7 +274,10 @@ int main(int argc, char **argv) {
                     for (int k = 0; k < 4; k++) b[4 * i + k] = (w >> (24 - 8 * k)) & 0xFF;
                 }
                 snprintf(fn, sizeof fn, "%s/%06ld.spr", out.c_str(), frame); dump(fn, b.data(), 4096);
-                for (int i = 0; i < 4096; i++) b[i] = r->dy_sys__DOT__u_wram__DOT__mem[i];
+                for (int i = 0; i < 4096; i++) {       // Z80 work RAM: bytes 0-4095 of the 16-bit RAM
+                    uint16_t w = r->dy_sys__DOT__u_ram__DOT__mem[i >> 1];
+                    b[i] = (i & 1) ? (w & 0xFF) : (w >> 8);
+                }
                 snprintf(fn, sizeof fn, "%s/%06ld.wram", out.c_str(), frame); dump(fn, b.data(), 4096);
             }
             if (fsnd)
@@ -287,6 +299,7 @@ int main(int argc, char **argv) {
     if (fwav) fclose(fwav);
     if (fwx) fclose(fwx);
     if (fwt) fclose(fwt);
+    if (fm68) fclose(fm68);
     if (fsys) fclose(fsys);
     if (ftr) fclose(ftr);
     top->final();

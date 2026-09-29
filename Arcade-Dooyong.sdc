@@ -33,6 +33,13 @@ set_multicycle_path -setup -end 2 \
 set_multicycle_path -hold -end 1 \
     -from [get_registers {emu|board|*u_oki|*}] -to [get_registers {emu|board|*u_oki|*}]
 
+# fx68k main CPU (68000 games): internal paths advance only on enPhi1 /
+# enPhi2, at least 4 system clocks apart (10 MHz); pattern from Hyper Duel
+set_multicycle_path -setup -end 2 \
+    -from [get_registers {emu|board|u_sys|u_m68k|*}] -to [get_registers {emu|board|u_sys|u_m68k|*}]
+set_multicycle_path -hold -end 1 \
+    -from [get_registers {emu|board|u_sys|u_m68k|*}] -to [get_registers {emu|board|u_sys|u_m68k|*}]
+
 # jt03 (YM2203) phase generator: every register in jt12_pg and its shift
 # registers updates only on clk_en = cen & internal divider (4 or 1.5 MHz
 # chip enable, at least 24 clocks apart). Only paths with both ends inside

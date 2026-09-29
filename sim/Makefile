@@ -150,8 +150,10 @@ m1-synth: $(M1BIN)
 # The simulation runs the system clock at 48 MHz (CPU /6, pixel 7,864,320 Hz
 # from 48 MHz) with a ROM model of one read per 4 clocks, latency 5; the
 # M1 budget numbers at 48 MHz (m1_findings 4) show this fits.
+FX68K := ../rtl/vendor/fx68k
 M2RTL := ../rtl/vendor/t80/T80s.v $(wildcard ../rtl/vendor/jt51/hdl/jt51*.v) $(wildcard ../rtl/vendor/jt03/hdl/*.v) \
-  $(wildcard ../rtl/vendor/jt6295/hdl/*.v) $(M1RTL) ../rtl/dy_snd.sv ../rtl/dy_sys.sv
+  $(wildcard ../rtl/vendor/jt6295/hdl/*.v) $(FX68K)/fx68k.sv $(FX68K)/fx68kAlu.sv $(FX68K)/uaddrPla.sv \
+  $(M1RTL) ../rtl/dy_snd.sv ../rtl/dy_sys.sv
 M2DIR ?= build/m2/obj_dir
 M2BIN := $(M2DIR)/Vdy_sys
 
@@ -160,6 +162,7 @@ $(M2BIN): $(M2RTL) m2/tb_sys.cpp
 	  --top-module dy_sys --Mdir $(M2DIR) -j 0 \
 	  -GCPU_DIV=6 -GCLK_HZ=48000000 -GPIX_NUM=786432 -GPIX_DEN=4800000 -I../rtl/vendor/jt51/hdl \
 	  -CFLAGS -O2 $(M2RTL) m2/tb_sys.cpp
+	cp -f $(FX68K)/microrom.mem $(FX68K)/nanorom.mem .   # fx68k $$readmemb, relative to the run directory
 
 m2-build: $(M2BIN)
 
