@@ -117,9 +117,15 @@ int main(int argc, char **argv) {
     for (int i = 0; i < 16; i++) tick(false);
     top->rst_n = 1;
     tick(false);
-    // advance to the start of the latch line (ce not yet given for h=0)
+    // advance to the start of the latch line (ce not yet given for h=0).
+    // The counters start at line 248 (0 on the primella family, dy_video
+    // power-on phase) and the first vblank is one frame later, so the
+    // normal games run one full frame to reach their first line 248.
     bool dummy;
-    for (long i = 0; i < (long)start_line * 512; i++) run_pixel(dummy);
+    const int reset_line = prm ? 0 : 248;
+    long adv = ((start_line - reset_line) % 256 + 256) % 256;
+    if (adv == 0) adv = 256;
+    for (long i = 0; i < adv * 512; i++) run_pixel(dummy);
 
     int bad = 0;
     // CPU writes with the pixel enable stopped

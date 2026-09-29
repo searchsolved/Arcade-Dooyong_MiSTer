@@ -150,7 +150,7 @@ m1-synth: $(M1BIN)
 # The simulation runs the system clock at 48 MHz (CPU /6, pixel 7,864,320 Hz
 # from 48 MHz) with a ROM model of one read per 4 clocks, latency 5; the
 # M1 budget numbers at 48 MHz (m1_findings 4) show this fits.
-M2RTL := ../rtl/vendor/t80/T80s.v $(wildcard ../rtl/vendor/jt51/hdl/jt51*.v) \
+M2RTL := ../rtl/vendor/t80/T80s.v $(wildcard ../rtl/vendor/jt51/hdl/jt51*.v) $(wildcard ../rtl/vendor/jt03/hdl/*.v) \
   $(wildcard ../rtl/vendor/jt6295/hdl/*.v) $(M1RTL) ../rtl/dy_snd.sv ../rtl/dy_sys.sv
 M2DIR ?= build/m2/obj_dir
 M2BIN := $(M2DIR)/Vdy_sys

@@ -25,6 +25,10 @@ an hour with both games in parallel).
   before ours, although both CPUs reach the write at the same cycle count
   from reset. The offset is in MAME's timestamps for the sound CPU, not in
   the core; `compare_snd.py` reports it as drift and allows 32 lines.
+  **Corrected 2026-09-29 (ym2203_findings 4.1):** the offset was real. MAME's
+  screen starts at the vblank line with its first vblank one frame later;
+  our video counters started 8 lines further on. Fixed in dy_video; the
+  drift is now -1..0 lines.
 - YM2151 timer A period: 20,883 CPU cycles measured against 20,883.1 in
   theory (NA = 732 at 3.579545 MHz).
 - M6295 status: MAME's status polled at each frame end from frame 320 to

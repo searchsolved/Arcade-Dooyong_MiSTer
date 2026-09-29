@@ -105,6 +105,24 @@ def latched_state(st, regw, machine):
                     st[f"{tag}.m_registers"][a & 7] = old
             if a == 0xC000:
                 st["m_flip_screen_x"] = [int(old != 0)]
+        elif machine == "lastday":
+            for base, tag in ((0xC000, "bg1"), (0xC008, "fg1")):
+                if base <= a <= base + 7:
+                    st[f"{tag}.m_registers"][a & 7] = old
+            if a == 0xC010:
+                st["m_flip_screen_x"] = [(old >> 6) & 1]
+                st["m_sprites_disabled"] = [(old >> 4) & 1]
+        elif machine in ("gulfstrm", "pollux"):
+            for base, tag in ((0xF018, "bg1"), (0xF020, "fg1")):
+                if base <= a <= base + 7:
+                    st[f"{tag}.m_registers"][a & 7] = old
+            if a == 0xF008:
+                st["m_flip_screen_x"] = [old & 1]
+                if machine == "pollux":
+                    b = (old >> 1) & 1
+                    st["m_palette_bank"] = [b]
+                    for t in ("bg1", "fg1", "tx"):
+                        st[f"{t}.m_palette_bank"] = [64 * b]
     return st
 
 
@@ -141,6 +159,15 @@ def line_check(fd, cap, n, rgb, machine, regw=()):
                 tw.append((t, 2 * (o & 0x7FF) + (0 if o & 0x800 else 1), d))
             elif 0xE800 <= a <= 0xEFFF:
                 pw.append((t, (int(bank) << 11) | (a & 0x7FF), d))
+        elif machine in ("lastday", "gulfstrm", "pollux"):
+            txb = 0xD000 if machine == "lastday" else 0xE000
+            if txb <= a <= txb + 0xFFF:                  # lane split, as flytiger
+                o = a & 0xFFF
+                tw.append((t, 2 * (o & 0x7FF) + (0 if o & 0x800 else 1), d))
+            elif machine == "lastday" and 0xC800 <= a <= 0xCFFF:
+                pw.append((t, a & 0x7FF, d))
+            elif machine != "lastday" and a >= 0xF800:
+                pw.append((t, ((int(bank) << 11) if machine == "pollux" else 0) | (a & 0x7FF), d))
         elif machine == "bluehawk":
             if 0xD000 <= a <= 0xDFFF:
                 o = a & 0xFFF
@@ -208,6 +235,10 @@ def reg_changes(run, machine):
                 changed = old is None or ((old ^ d) & 0x19) != 0    # flip, bank, priority
             elif machine == "primella":
                 changed = old is None or ((old ^ d) & 0x18) != 0    # text priority, flip
+            elif machine == "lastday":
+                changed = old is None or ((old ^ d) & 0x50) != 0    # flip, sprite disable
+            elif machine in ("gulfstrm", "pollux"):
+                changed = old is None or ((old ^ d) & (0x03 if machine == "pollux" else 0x01)) != 0
             else:
                 changed = old is None or (old != 0) != (d != 0)     # bluehawk flip
         else:

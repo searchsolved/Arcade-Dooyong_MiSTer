@@ -100,6 +100,14 @@ int main(int argc, char **argv) {
     std::string sndf = plus("snd", ""), wavf = plus("wav", "");
     FILE *fsnd = sndf.empty() ? nullptr : fopen(sndf.c_str(), "w");
     FILE *fwav = wavf.empty() ? nullptr : fopen(wavf.c_str(), "wb");
+    std::string wtf = plus("wtrace", "");
+    FILE *fwt = wtf.empty() ? nullptr : fopen(wtf.c_str(), "w");
+    int wtaddr = strtol(plus("wtaddr", "0").c_str(), nullptr, 16) & 0xFFFE;
+    std::string sysf = plus("sysrd", "");
+    FILE *fsys = sysf.empty() ? nullptr : fopen(sysf.c_str(), "w");
+    int sysaddr = strtol(plus("sysaddr", "F004").c_str(), nullptr, 16);
+    std::string wxf = plus("opnwav", "");         // YM2203 FM and SSG sums, int32 pairs at 48 kHz
+    FILE *fwx = wxf.empty() ? nullptr : fopen(wxf.c_str(), "wb");
     std::string trf = plus("cputrace", "");       // sound CPU opcode fetch addresses
     FILE *ftr = trf.empty() ? nullptr : fopen(trf.c_str(), "w");
     bool m1_prev = true;
@@ -165,7 +173,11 @@ int main(int argc, char **argv) {
         }
         if (fsnd && r->dy_sys__DOT__u_snd__DOT__wr) {
             uint16_t a = r->dy_sys__DOT__u_snd__DOT__A;
-            if (a >= 0xF808 && a <= 0xF80A || a < 0xF000)
+            // sound chip and ROM-range writes per sound map (spec 4)
+            bool log = (game == 0 || game == 1) ? ((a >= 0xF000 && a <= 0xF003) || a < 0x8000)
+                     : (game == 2) ? ((a >= 0xF802 && a <= 0xF805) || a < 0xF000)
+                     : ((a >= 0xF808 && a <= 0xF80A) || a < 0xF000);
+            if (log)
                 fprintf(fsnd, "%ld %d %d %04x %02x\n", frame, r->dy_sys__DOT__u_video__DOT__vcnt,
                         r->dy_sys__DOT__u_video__DOT__hcnt, a, r->dy_sys__DOT__u_snd__DOT__dout);
         }
@@ -180,8 +192,25 @@ int main(int argc, char **argv) {
                 wav_acc -= clk_hz;
                 int16_t v = (int16_t)top->o_audio;
                 fwrite(&v, 2, 1, fwav);
+                if (fwx) {
+                    int32_t p[2] = {(int32_t)(r->dy_sys__DOT__u_snd__DOT__dbg_fm << 15) >> 15,
+                                    (int32_t)r->dy_sys__DOT__u_snd__DOT__dbg_ssg};
+                    fwrite(p, 4, 2, fwx);
+                }
             }
         }
+        if (fsys) {   // main CPU reads of the SYSTEM port (+sysrd=FILE, +sysaddr=HEX)
+            static bool rdp = true;
+            bool rdn = r->dy_sys__DOT__rd_n;
+            if (!rdn && rdp && r->dy_sys__DOT__A == sysaddr)
+                fprintf(fsys, "%ld %d %d %d pc %04x\n", frame, r->dy_sys__DOT__u_video__DOT__vcnt,
+                        r->dy_sys__DOT__u_video__DOT__hcnt, (int)r->dy_sys__DOT__vbl_in, top->o_cpu_pc_dbg);
+            rdp = rdn;
+        }
+        if (fwt && r->dy_sys__DOT__wr && (r->dy_sys__DOT__A & 0xFFFE) == wtaddr)   // +wtrace=FILE +wtaddr=HEX
+            fprintf(fwt, "%ld %d %d %04x %02x pc %04x\n", frame, r->dy_sys__DOT__u_video__DOT__vcnt,
+                    r->dy_sys__DOT__u_video__DOT__hcnt, r->dy_sys__DOT__A, r->dy_sys__DOT__cpu_dout,
+                    top->o_cpu_pc_dbg);
         if (r->dy_sys__DOT__wr && r->dy_sys__DOT__A >= 0xC000 && cap.count(frame)) {
             char b[48];
             snprintf(b, sizeof b, "%d %d %04x %02x\n", r->dy_sys__DOT__u_video__DOT__vcnt,
@@ -256,6 +285,9 @@ int main(int argc, char **argv) {
            top->o_dbg_rom_writes, top->o_dbg_bank_hi, top->o_dbg_snd_rom_writes);
     if (fsnd) fclose(fsnd);
     if (fwav) fclose(fwav);
+    if (fwx) fclose(fwx);
+    if (fwt) fclose(fwt);
+    if (fsys) fclose(fsys);
     if (ftr) fclose(ftr);
     top->final();
     top.reset();

@@ -116,33 +116,32 @@ bits 0-2 instead (466-467).
 
 ### 3.3 gulfstrm (841-858) and pollux (822-839)
 
+Corrected 2026-09-29 from the driver (the first version of this table
+listed bluehawk's I/O addresses).
+
 | Range | R | W |
 |---|---|---|
 | 0x0000-0x7FFF | program ROM | - |
 | 0x8000-0xBFFF | bank | - |
 | 0xC000-0xCFFF | work RAM | same |
 | 0xD000-0xDFFF | sprite RAM | same |
-| 0xE000-0xEFFF | text RAM, lane split | same |
+| 0xE000-0xEFFF | text RAM, lane split (156-166) | same |
 | 0xF000 | DSWA | `bankswitch_w` |
 | 0xF001 | DSWB | - |
-| 0xF002 | pollux: P1, gulfstrm: P2 (831, 850) | - |
-| 0xF003 | pollux: P2, gulfstrm: P1 (832, 851) | - |
+| 0xF002 | P1 (pollux), **P2 (gulfstrm)** | - |
+| 0xF003 | P2 (pollux), **P1 (gulfstrm)** | - |
 | 0xF004 | SYSTEM | - |
-| 0xF008 | - | `pollux_ctrl_w` (both games, 834, 853) |
+| 0xF008 | - | `pollux_ctrl_w` |
 | 0xF010 | - | sound latch |
 | 0xF018-0xF01F | - | bg0 tilemap regs |
 | 0xF020-0xF027 | - | fg0 tilemap regs |
-| 0xF800-0xFFFF | pollux: banked palette via `paletteram_flytiger_r/w` (838); gulfstrm: plain palette RAM (857) | same |
-
-Note the P1/P2 address swap between the two games.
+| 0xF800-0xFFFF | palette RAM (pollux: banked, 180-192) | same |
 
 ### 3.4 bluehawk (860-879)
 
 | Range | R | W |
 |---|---|---|
-| 0x0000-0x7FFF | program ROM | - |
-| 0x8000-0xBFFF | bank | - |
-| 0xC000 | DSWA | `flip_screen_w` (whole byte, 145-148) |
+| 0xC000 | DSWA | `flip_screen_w` |
 | 0xC001 | DSWB | - |
 | 0xC002 | P1 | - |
 | 0xC003 | P2 | - |

@@ -20115,8 +20115,8 @@ module t80_0_1_0_1_2_3_4_5_6_7
     .addrc(regaddrc),
     .dih(regdih),
     .dil(regdil),
-    .dirset(dirset),
-    .dir(n1635_o),
+    .dirset(dirset | ~reset_n),   // dooyong-mister patch: IX = IY = FFFF at reset (PROVENANCE.md)
+    .dir(reset_n ? n1635_o : {16'hFFFF, 48'h0, 16'hFFFF, 48'h0}),
     .doah(u_regs_doah),
     .doal(u_regs_doal),
     .dobh(u_regs_dobh),

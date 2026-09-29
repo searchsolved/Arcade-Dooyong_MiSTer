@@ -16,7 +16,13 @@
 // Program ROM is in BRAM (zero wait states, as MAME's Z80 has none; no
 // SDRAM arbitration with the renderer). Loaded through the download port.
 //
-// Games: flytiger, bluehawk and primella-family memory maps (spec 3.4-3.6).
+// Games: lastday, gulfstrm, pollux, flytiger, bluehawk and primella-family
+// memory maps (driver 802-918; spec 3).
+//
+// i_system is the generic Z80 SYSTEM port (spec 9.2: 0 Coin1, 1 Start1,
+// 2 Coin2, 3 Start2, 4 Service1, active low). lastday, gulfstrm and pollux
+// read their own bit orders; they are rebuilt here, including the vblank
+// input of gulfstrm and pollux (bit 4, low during MAME's 2.5 ms vblank).
 
 module dy_sys #(
     parameter int CPU_DIV = 12,
@@ -110,7 +116,8 @@ module dy_sys #(
   logic [15:0] A /* verilator public_flat_rd */;
   logic [7:0]  cpu_dout /* verilator public_flat_rd */;
   logic [7:0]  cpu_din;
-  logic        m1_n, mreq_n, iorq_n, rd_n, wr_n, rfsh_n, halt_n, busak_n;
+  logic        m1_n, mreq_n, iorq_n, wr_n, rfsh_n, halt_n, busak_n;
+  logic        rd_n /* verilator public_flat_rd */;
   logic        int_n;
 
   T80s u_cpu (
@@ -135,6 +142,10 @@ module dy_sys #(
   wire is_ft = (i_game == G_FLYTIGER);
   wire is_bh = (i_game == G_BLUEHAWK);
   wire is_pr = is_primella(i_game);
+  wire is_ld = (i_game == G_LASTDAY);
+  wire is_gs = (i_game == G_GULFSTRM);
+  wire is_px = (i_game == G_POLLUX);
+  wire is_gp = is_gs || is_px;          // gulfstrm and pollux share a map
   wire mem   = !mreq_n && rfsh_n;
 
   typedef enum logic [3:0] {
@@ -159,6 +170,26 @@ module dy_sys #(
         4'hD: sel = D_TXT;
         4'hE: sel = D_SPR;
         4'hF: sel = D_WRAM;
+        default: ;
+      endcase
+    end else if (is_ld) begin
+      // C000-C7FF I/O and tilemap regs, C800 palette, D000 text, E000 work
+      // RAM, F000 sprite RAM
+      case (A[15:12])
+        4'hC: sel = A[11] ? D_PAL : D_IO;
+        4'hD: sel = D_TXT;
+        4'hE: sel = D_WRAM;
+        4'hF: sel = D_SPR;
+        default: ;
+      endcase
+    end else if (is_gp) begin
+      // C000 work RAM, D000 sprite RAM, E000 text, F000-F7FF I/O, F800
+      // palette (banked on pollux)
+      case (A[15:12])
+        4'hC: sel = D_WRAM;
+        4'hD: sel = D_SPR;
+        4'hE: sel = D_TXT;
+        4'hF: sel = A[11] ? D_PAL : D_IO;
         default: ;
       endcase
     end else if (is_pr) begin
@@ -202,12 +233,19 @@ module dy_sys #(
 
   // ================================================================ registers
   logic [7:0] ctrl;
-  logic       flip, pal_bank, pri_swap;
+  logic       flip, pal_bank, pri_swap, spr_dis;
   always_comb begin
     flip     = 1'b0;
     pal_bank = 1'b0;
     pri_swap = 1'b0;
-    if (is_ft) begin
+    spr_dis  = 1'b0;
+    if (is_ld) begin
+      flip     = ctrl[6];
+      spr_dis  = ctrl[4];               // sprites off (spec 10.1)
+    end else if (is_gp) begin
+      flip     = ctrl[0];
+      pal_bank = is_px && ctrl[1];      // gulfstrm has no banked palette (spec 6.1)
+    end else if (is_ft) begin
       flip     = ctrl[0];
       pal_bank = ctrl[3];
       pri_swap = ctrl[4];
@@ -245,6 +283,18 @@ module dy_sys #(
         if (io[11:3] == 9'h003) begin tm_we = 1'b1; tm_layer = 2'd2; end   // C018-C01F fg1
         if (io[11:3] == 9'h008) begin tm_we = 1'b1; tm_layer = 2'd0; end   // C040-C047 bg0
         if (io[11:3] == 9'h009) begin tm_we = 1'b1; tm_layer = 2'd1; end   // C048-C04F fg0
+      end else if (is_ld) begin
+        io_ctrl_w  = io == 12'h010;                                         // lastday_ctrl_w
+        io_bank_w  = io == 12'h011;
+        io_latch_w = io == 12'h012;
+        if (io[11:3] == 9'h000) begin tm_we = 1'b1; tm_layer = 2'd0; end   // C000-C007 bg0
+        if (io[11:3] == 9'h001) begin tm_we = 1'b1; tm_layer = 2'd1; end   // C008-C00F fg0
+      end else if (is_gp) begin
+        io_bank_w  = io == 12'h000;
+        io_ctrl_w  = io == 12'h008;                                         // pollux_ctrl_w
+        io_latch_w = io == 12'h010;
+        if (io[11:3] == 9'h003) begin tm_we = 1'b1; tm_layer = 2'd0; end   // F018-F01F bg0
+        if (io[11:3] == 9'h004) begin tm_we = 1'b1; tm_layer = 2'd1; end   // F020-F027 fg0
       end else if (is_pr) begin
         io_ctrl_w  = io == 12'h800;                                         // primella_ctrl_w (+ bank)
         io_latch_w = io == 12'h810;
@@ -254,10 +304,34 @@ module dy_sys #(
     end
   end
 
+  // per-game SYSTEM ports (spec 9.2) from the generic one
+  logic       vbl_in /* verilator public_flat_rd */;   // MAME screen vblank: 2.5 ms from line 248
+  wire  [7:0] g = i_system;
+  wire  [7:0] sys_ld = {g[0], g[2], g[4], 1'b1, 1'b0, g[3], 1'b1, g[1]};    // tilt active high, idle 0
+  wire  [7:0] sys_gp = {1'b1, g[3], g[1], !vbl_in, 1'b1, g[4], g[2], g[0]};
+
   logic [7:0] io_q;
   always_comb begin
     io_q = 8'h00;                      // unmapped reads return 0 (spec 3)
-    if (is_ft) begin
+    if (is_ld) begin
+      case (io)
+        12'h010: io_q = sys_ld;
+        12'h011: io_q = i_p1;
+        12'h012: io_q = i_p2;
+        12'h013: io_q = i_dswa;
+        12'h014: io_q = i_dswb;
+        default: ;
+      endcase
+    end else if (is_gp) begin
+      case (io)
+        12'h000: io_q = i_dswa;
+        12'h001: io_q = i_dswb;
+        12'h002: io_q = is_gs ? i_p2 : i_p1;   // gulfstrm swaps P1/P2 (driver 850-851)
+        12'h003: io_q = is_gs ? i_p1 : i_p2;
+        12'h004: io_q = sys_gp;
+        default: ;
+      endcase
+    end else if (is_ft) begin
       case (io)
         12'h000: io_q = i_p1;
         12'h002: io_q = i_p2;
@@ -312,7 +386,7 @@ module dy_sys #(
   end
 
   // ================================================================ video
-  wire [11:0] pal_a = is_ft ? {pal_bank, A[10:0]} : {1'b0, A[10:0]};
+  wire [11:0] pal_a = (is_ft || is_px) ? {pal_bank, A[10:0]} : {1'b0, A[10:0]};
   wire        v_pal_we = wr && sel == D_PAL;
   wire        v_txt_we = wr && sel == D_TXT;
   wire        v_spr_we = wr && sel == D_SPR;
@@ -325,7 +399,7 @@ module dy_sys #(
     .i_pal_we(v_pal_we), .i_txt_we(v_txt_we), .i_spr_we(v_spr_we),
     .o_pal_dout(pal_q), .o_txt_dout(txt_q), .o_spr_dout(spr_q),
     .i_tm_we(tm_we), .i_tm_layer(tm_layer), .i_tm_reg(A[2:0]), .i_tm_din(cpu_dout),
-    .i_flip(flip), .i_pal_bank(pal_bank), .i_pri_swap(pri_swap), .i_spr_disable(1'b0),
+    .i_flip(flip), .i_pal_bank(pal_bank), .i_pri_swap(pri_swap), .i_spr_disable(spr_dis),
     .o_rom_req(o_rom_req), .o_rom_addr(o_rom_addr),
     .i_rom_gnt(i_rom_gnt), .i_rom_rv(i_rom_rv), .i_rom_data(i_rom_data),
     .o_r(o_r), .o_g(o_g), .o_b(o_b), .o_de(o_de),
@@ -334,6 +408,24 @@ module dy_sys #(
     .o_dbg_overruns(o_dbg_overruns), .o_dbg_maxcyc(o_dbg_maxcyc));
   assign o_vbl_irq = vbl_irq;
   assign o_ce_pix  = ce_pix;
+
+  // MAME's screen vblank line (set_vblank_time 2500 us, spec 5.3): high
+  // from the vblank IRQ for 2.5 ms, counted in pixel enables
+  localparam longint PIX_HZ  = longint'(CLK_HZ) * PIX_NUM / PIX_DEN;
+  localparam int     VBL_PIX = int'((PIX_HZ * 25 + 5000) / 10000);
+  logic [15:0] vbl_cnt;
+  always_ff @(posedge clk) begin
+    if (!rst_n) begin
+      vbl_in  <= 1'b0;
+      vbl_cnt <= '0;
+    end else if (vbl_irq) begin
+      vbl_in  <= 1'b1;
+      vbl_cnt <= 16'(VBL_PIX - 1);
+    end else if (ce_pix && vbl_in) begin
+      if (vbl_cnt == 16'd0) vbl_in <= 1'b0;
+      else                  vbl_cnt <= vbl_cnt - 16'd1;
+    end
+  end
 
   // ================================================================ read mux
   // registered every clock; RAM outputs are one clock behind the address,
@@ -356,10 +448,12 @@ module dy_sys #(
 
   // ================================================================ sound
   // YM2151 3.579545 MHz (flytiger, bluehawk), 4 MHz on the primella family
-  // (16 MHz / 4, spec 2)
+  // (16 MHz / 4, spec 2). lastday, gulfstrm, pollux: 2x YM2203 at 4 MHz
+  // (lastday) or 1.5 MHz, sound CPU 8 MHz on gulfstrm.
   dy_snd #(.CPU_DIV(2 * CPU_DIV), .YM_NUM(3579545), .YM4_NUM(4000000), .YM_DEN(CLK_HZ),
            .OKI_DIV(8 * CPU_DIV)) u_snd (
     .clk(clk), .rst_n(rst_n), .i_ym_4m(is_pr),
+    .i_opn(is_ld || is_gp), .i_opn_map_ld(is_ld || is_gs), .i_opn_15(is_gp), .i_cpu_fast(is_gs),
     .i_dl_we(i_dl_we && i_dl_addr[17]), .i_dl_addr(i_dl_addr[15:0]), .i_dl_data(i_dl_data),
     .i_latch(o_snd_latch),
     .o_oki_addr(o_oki_addr), .i_oki_data(i_oki_data), .i_oki_ok(i_oki_ok),

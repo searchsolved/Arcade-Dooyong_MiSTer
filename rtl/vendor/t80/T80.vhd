@@ -128,6 +128,10 @@ entity T80 is
 end T80;
 
 architecture rtl of T80 is
+
+	-- dooyong-mister patch: register file load at reset (see below)
+	signal RegDIRSet : std_logic;
+	signal RegDIR    : std_logic_vector(127 downto 0);
     component T80_MCode
         generic(
             Mode   : integer := 0;
@@ -1071,8 +1075,14 @@ begin
 			DOCH => RegBusC(15 downto 8),
 			DOCL => RegBusC(7 downto 0),
 			DOR  => DOR,
-			DIRSet => DIRSet,
-			DIR  => DIR(207 downto 80));
+			DIRSet => RegDIRSet,
+			DIR  => RegDIR);
+
+	-- dooyong-mister patch (PROVENANCE.md): load IX = IY = FFFF (and BC, DE,
+	-- HL and the alternates with 0) during reset, MAME's Z80 power-on state
+	RegDIRSet <= DIRSet or not RESET_n;
+	RegDIR <= DIR(207 downto 80) when RESET_n = '1' else
+	          x"FFFF" & x"000000000000" & x"FFFF" & x"000000000000";
 
 ---------------------------------------------------------------------------
 --

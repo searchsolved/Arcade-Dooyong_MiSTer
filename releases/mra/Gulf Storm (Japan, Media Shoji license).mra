@@ -1,0 +1,66 @@
+<misterromdescription>
+    <name>Gulf Storm (Japan, Media Shoji license)</name>
+    <setname>gulfstrmm</setname>
+    <rbf>Dooyong</rbf>
+    <mameversion>0289</mameversion>
+    <year>1991</year>
+    <manufacturer>Dooyong (Media Shoji license)</manufacturer>
+    <players>2</players>
+    <joystick>8-way</joystick>
+    <rotation>vertical (ccw)</rotation>
+    <switches default="FF,FF">
+        <dip name="Service Mode" bits="0" ids="On,Off" />
+        <dip name="Coin Type" bits="1" ids="B,A" />
+        <dip name="Demo Sounds" bits="2" ids="Off,On" />
+        <dip name="Flip Screen" bits="3" ids="On,Off" />
+        <dip name="Coin A" bits="4,5" ids="2C/3C,2C/1C,1C/2C,1C/1C" />
+        <dip name="Coin B" bits="6,7" ids="2C/3C,2C/1C,1C/2C,1C/1C" />
+        <dip name="Lives" bits="8,9" ids="1,4,2,3" />
+        <dip name="Difficulty" bits="10,11" ids="Hardest,Hard,Easy,Normal" />
+        <dip name="Bonus Life" bits="12,13" ids="None,Every 500000,Every 400000,Every 300000" />
+        <dip name="Power Rise(?)" bits="14" ids="2,1" />
+        <dip name="Allow Continue" bits="15" ids="No,Yes" />
+    </switches>
+    <buttons names="Button 1,Button 2,Start,Coin,Service" default="A,B,Start,Select,L" />
+    <rom index="1">
+        <part>01</part>
+    </rom>
+    <rom index="0" zip="gulfstrmm.zip|gulfstrm.zip" md5="none">
+        <part name="18.l4" crc="d38e2667" offset="0x0" length="0x20000" />
+        <part repeat="0x20000">00</part>
+        <part name="3.c5" crc="c029b015" offset="0x0" length="0x10000" />
+        <part name="2.bin" crc="cb555d96" offset="0x8000" length="0x8000" />
+        <part repeat="0x68000">00</part>
+        <interleave output="16">
+            <part name="8.e8" crc="8d7f4693" offset="0x0" length="0x10000" map="01" />
+            <part name="9.e9" crc="34d440c4" offset="0x0" length="0x10000" map="10" />
+        </interleave>
+        <interleave output="16">
+            <part name="10.bin" crc="08149140" offset="0x0" length="0x10000" map="01" />
+            <part name="11.bin" crc="2ed7545b" offset="0x0" length="0x10000" map="10" />
+        </interleave>
+        <part repeat="0x40000">00</part>
+        <interleave output="16">
+            <part name="14.b1" crc="67bdf73d" offset="0x0" length="0x20000" map="01" />
+            <part name="16.c1" crc="7770a76f" offset="0x0" length="0x20000" map="10" />
+        </interleave>
+        <interleave output="16">
+            <part name="15.b1" crc="84803f7e" offset="0x0" length="0x20000" map="01" />
+            <part name="17.e1" crc="94706500" offset="0x0" length="0x20000" map="10" />
+        </interleave>
+        <part repeat="0x180000">00</part>
+        <interleave output="16">
+            <part name="4.d8" crc="858fdbb6" offset="0x0" length="0x20000" map="01" />
+            <part name="5.b9" crc="c0a552e8" offset="0x0" length="0x20000" map="10" />
+        </interleave>
+        <interleave output="16">
+            <part name="6.d8" crc="20eedda3" offset="0x0" length="0x20000" map="01" />
+            <part name="7.d9" crc="294f8c40" offset="0x0" length="0x20000" map="10" />
+        </interleave>
+        <part repeat="0x180000">00</part>
+        <interleave output="16">
+            <part name="12.bin" crc="3e3d3b57" offset="0x0" length="0x20000" map="01" />
+            <part name="13.bin" crc="66fcce80" offset="0x0" length="0x20000" map="10" />
+        </interleave>
+    </rom>
+</misterromdescription>

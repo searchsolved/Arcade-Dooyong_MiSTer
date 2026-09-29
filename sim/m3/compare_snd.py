@@ -22,9 +22,30 @@ import sys
 from pathlib import Path
 
 
+# YM2203 games (spec 4): (address/data port pairs of chip 1 and 2, ROM end)
+OPN = {"lastday": ((0xF000, 0xF002), 0x8000), "gulfstrm": ((0xF000, 0xF002), 0x8000),
+       "pollux": ((0xF802, 0xF804), 0xF000)}
+MACHINE = None      # set in main()
+
+
 def streams(events):
-    ym, oki, romw = [], [], []
+    ym, oki, romw, ym2 = [], [], [], []
     reg = None
+    reg2 = None
+    if MACHINE in OPN:
+        (c1, c2), romhi = OPN[MACHINE]
+        for t, a, d in events:
+            if a == c1:
+                reg = d
+            elif a == c1 + 1:
+                ym.append((t, (reg, d)))
+            elif a == c2:
+                reg2 = d
+            elif a == c2 + 1:
+                ym2.append((t, (reg2, d)))
+            elif a < romhi:
+                romw.append((t, (a, d)))
+        return {"ym": ym, "ym2": ym2, "romw": romw}
     for t, a, d in events:
         if a == 0xF808:
             reg = d
@@ -67,17 +88,18 @@ def load_mame(run, frames):
 
 
 def main(argv):
-    global VBL
+    global VBL, MACHINE
     ours_p, run = argv[0], argv[1]
     fr = sorted((Path(run) / "frames").glob("*/state.json"))
-    if fr and json.loads(fr[0].read_text())["machine"] == "primella":
+    MACHINE = json.loads(fr[0].read_text())["machine"] if fr else None
+    if MACHINE == "primella":
         VBL = 0
     frames = int(argv[argv.index("--frames") + 1]) if "--frames" in argv else 10 ** 9
     tol = int(argv[argv.index("--tol") + 1]) if "--tol" in argv else 32
     o = streams(load_ours(ours_p, frames))
     m = streams(load_mame(run, frames))
     ok = True
-    for k in ("ym", "oki", "romw"):
+    for k in o:
         a, b = o[k], m[k]
         n = min(len(a), len(b))
         first = next((i for i in range(n) if a[i][1] != b[i][1]), None)

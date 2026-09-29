@@ -34,7 +34,7 @@ from build_regions import SDRAM_SLOTS, REGION_SLOT, OUT as REGIONS  # noqa: E402
 GAME_ID = {"lastday": 0, "gulfstrm": 1, "pollux": 2, "flytiger": 3, "bluehawk": 4}
 # primella machine config: sadari 5; gundl94 and its clone primella 6
 PRIMELLA_ID = {"sadari": 5, "gundl94": 6}
-SUPPORTED = ("flytiger", "bluehawk", "primella")      # machines the RBF runs so far
+SUPPORTED = ("lastday", "gulfstrm", "pollux", "flytiger", "bluehawk", "primella")      # machines the RBF runs so far
 RBF = "Dooyong"
 OUTDIR = ROOT / "releases" / "mra"
 
@@ -273,6 +273,12 @@ def switches(machine, parent):
         d.append(("Girl Show Point", "14", "Asia,Other Country", None))
     if machine == "flytiger":
         d.append(("Auto Fire", "14", "Off,On", None))
+    if machine == "lastday":                     # dooyong.cpp 1183-1191
+        d.append(("Bonus Life", "12,13", "None,280000,Every 240000,Every 200000", None))
+        d.append(("Speed", "14", "Low,High", None))
+    if machine == "gulfstrm":                    # dooyong.cpp 1207-1215
+        d.append(("Bonus Life", "12,13", "None,Every 500000,Every 400000,Every 300000", None))
+        d.append(("Power Rise(?)", "14", "2,1", None))
     d.append(("Allow Continue", "15", "No,Yes", None))
     for name, bits, ids, vals in d:
         e = ET.SubElement(sw, "dip", name=name, bits=bits, ids=ids)

@@ -103,10 +103,17 @@ module dy_video #(
   logic [7:0] vcnt /* verilator public_flat_rd */;
   assign vcnt = vfull[7:0];
   wire        vextra = vfull[8];          // lines 256.. (vblank only)
+  // Power-on phase (MAME parity): MAME's screen starts at the vblank line
+  // (vpos = visible bottom + 1) and its first vblank comes one frame later,
+  // so the counters start at line 248 (line 256 = 0 on the primella family)
+  // and that first line does not raise the IRQ. With the counters starting
+  // at 0 instead, every CPU runs 8 lines late against the video from reset
+  // (m3_findings 2 took this for a MAME timestamp artefact; the main CPU's
+  // early writes and the stacked IRQ return addresses showed it is real).
   always_ff @(posedge clk) begin
     if (!rst_n) begin
       hcnt  <= '0;
-      vfull <= '0;
+      vfull <= is_primella(i_game) ? 9'd0 : 9'd248;
     end else if (ce_pix) begin
       hcnt <= hcnt + 9'd1;
       if (hcnt == 9'd511) vfull <= (vfull == 9'(V_TOTAL - 1)) ? 9'd0 : vfull + 9'd1;
@@ -117,13 +124,18 @@ module dy_video #(
   wire prm        = is_primella(i_game);
   // primella vblank = line 256; with V_TOTAL 256 that is the wrap to line 0,
   // which must not count at power-on (MAME's first vblank is one frame in)
-  logic wrapped;
+  logic wrapped, started;
   always_ff @(posedge clk) begin
-    if (!rst_n) wrapped <= 1'b0;
-    else if (line_start && last_line) wrapped <= 1'b1;
+    if (!rst_n) begin
+      wrapped <= 1'b0;
+      started <= 1'b0;
+    end else begin
+      if (line_start && last_line) wrapped <= 1'b1;
+      if (line_start) started <= 1'b1;
+    end
   end
   wire vbl_prm    = (V_TOTAL > 256) ? vfull == 9'd256 : (vfull == 9'd0 && wrapped);
-  wire vbl_start  = line_start && (prm ? vbl_prm : (!vextra && vcnt == 8'd248));
+  wire vbl_start  = line_start && (prm ? vbl_prm : (!vextra && vcnt == 8'd248 && started));
   wire latch_now  = line_start && (prm ? last_line : (!vextra && vcnt == 8'(LATCH_LINE)));
   assign o_vbl_irq = vbl_start;
 

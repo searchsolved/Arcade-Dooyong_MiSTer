@@ -55,3 +55,5 @@ never sets the text priority bit; the targeted scenes cover those.
   artefact unless heard on hardware.
 - T15 (the D000-D3FF RAM) stays unexplained; it is plain RAM here as in
   MAME.
+
+Hardware (2026-09-29): Dooyong_20260929.rbf (md5 04fa2a61, timing +0.518 ns) deployed with the Sadari, Gun Dealer '94 and Primella MRAs; Lee: "switched on and working".

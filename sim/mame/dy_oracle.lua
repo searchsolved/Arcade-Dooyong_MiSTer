@@ -79,12 +79,16 @@ local Z80 = {
   gulfstrm = { regs = { { ":bg1", 0xf018 }, { ":fg1", 0xf020 } },
     ctrl = 0xf008, bank = 0xf000, latch = 0xf010,
     pal = { 0xf800, 0xffff }, tx = { 0xe000, 0xefff }, spr = { 0xd000, 0xdfff },
-    snd = { { 0xf000, 0xf003, "ym2203x2" } } },
+    snd = { { 0xf000, 0xf003, "ym2203x2" } }, wram = { 0xc000, 0xcfff } },
   primella = { regs = { { ":bg1", 0xfc00 }, { ":fg1", 0xfc08 } },
     ctrl = 0xf800, latch = 0xf810,
     pal = { 0xf000, 0xf7ff }, tx = { 0xe000, 0xefff } },
 }
-Z80.pollux = Z80.gulfstrm
+-- pollux shares gulfstrm's main map but its YM2203s sit at F802-F805 in the
+-- sound map (F000-F7FF is sound RAM there)
+Z80.pollux = {}
+for k, v in pairs(Z80.gulfstrm) do Z80.pollux[k] = v end
+Z80.pollux.snd = { { 0xf802, 0xf805, "ym2203x2" } }
 local M68K = {
   rshark = { regs = { { ":bg1", 0x0c4000 }, { ":bg2", 0x0c4010 }, { ":fg1", 0x0cc000 }, { ":fg2", 0x0cc010 } },
     ctrl = 0x0c0015, latch = 0x0c0013, pal = { 0x0c8000, 0x0c8fff }, spr = { 0x04d000, 0x04dfff },
@@ -359,6 +363,12 @@ local function dump_frame(n)
   -- sprite RAM: live CPU share and the vblank-copied buffer used to draw
   local live = share_bytes(":spriteram")
   if live then wfile(d .. "/spriteram_live.bin", live) end
+  -- main work RAM (M2 divergence hunting; cfg.wram = { lo, hi })
+  if cfg.wram then
+    local t = {}
+    for a = cfg.wram[1], cfg.wram[2] do t[#t + 1] = string.char(main:read_u8(a)) end
+    wfile(d .. "/wram.bin", table.concat(t))
+  end
   local buf = item_of(":spriteram", "0/m_buffered")
   if buf then wfile(d .. "/spriteram_buf.bin", item_bytes(buf)) end
   -- registers and driver state
