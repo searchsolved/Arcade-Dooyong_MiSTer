@@ -66,7 +66,7 @@ def main(argv):
         nent = mc["pal_entries"]
         unwritten_visible = 0
         if (fd / "pens.bin").exists():
-            ours_pal = palette_rgb((fd / "palette.bin").read_bytes(), mc["palette"], nent)
+            ours_pal = palette_rgb((fd / "palette.bin").read_bytes(), mc["palette"], nent, mc.get("pal_be", False))
             mp = np.frombuffer((fd / "pens.bin").read_bytes(), dtype="<u4")[:nent]
             mame_pal = np.stack([(mp >> 16) & 255, (mp >> 8) & 255, mp & 255], axis=-1).astype(np.uint8)
             written = np.frombuffer((fd / "palette_written.bin").read_bytes(), dtype=np.uint8)[:nent].astype(bool)
@@ -93,7 +93,7 @@ def main(argv):
         if unwritten_visible:
             stats["pixels_skipped"] += 1
         elif (fd / "screen.argb").exists() and (fd / "palette_next.bin").exists():
-            pal = palette_rgb((fd / "palette_next.bin").read_bytes(), mc["palette"], mc["pal_entries"])
+            pal = palette_rgb((fd / "palette_next.bin").read_bytes(), mc["palette"], mc["pal_entries"], mc.get("pal_be", False))
             fail += bool(diff_report("pixels", fd.name, pal[pens], load_argb(fd), diffdir))
             checked["pixels"] += 1
         bad += bool(fail)

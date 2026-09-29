@@ -8,8 +8,9 @@ the model the M1 video RTL is checked against, so it is written from the
 spec and the driver, not from MAME internals beyond those the spec cites.
 
 Coverage: lastday, gulfstrm, pollux, flytiger, bluehawk, primella family
-(sadari, gundl94, primella). The 68000 family is not implemented yet (it
-needs the 16x16 layers, colour ROM and 68000 sprite list, spec 7.4/10.2).
+(sadari, gundl94, primella), and the 68000 family: rshark and superx (four
+16x16 layers with the colour ROM, spec 7.4) and popbingo (two 32x32 layers
+combined into an 8-bit pen, spec 11.9), with the 68000 sprite list (10.2).
 
 Usage:
   dy_render.py <frame_dir> [--regions DIR] [--out out.png]
@@ -55,6 +56,12 @@ SPRITELAYOUT = dict(
 LASTDAY_CHARLAYOUT = dict(
     w=8, h=8, planes=[0, 4, "F+0", "F+4"],
     x=_step(0, 1, 4) + _step(8, 1, 4), y=_step(0, 2 * 8, 8), inc=8 * 8 * 2, frac=2)
+
+# gfx_8x8x4_col_2x2_group_packed_msb: four packed 8x8 tiles, column-major
+# (top-left, bottom-left, top-right, bottom-right), 32 bytes each
+SPR68K = dict(
+    w=16, h=16, planes=_step(0, 1, 4),
+    x=_step(0, 4, 8) + _step(64 * 8, 4, 8), y=_step(0, 4 * 8, 16), inc=128 * 8, frac=None)
 
 PACKED_8X8 = dict(   # gfx_8x8x4_packed_msb
     w=8, h=8, planes=_step(0, 1, 4), x=_step(0, 4, 8), y=_step(0, 4 * 8, 8),
@@ -123,6 +130,19 @@ MACHINES = {
         text=L(layout="packed", colors=16, yscroll=0), sprites=None,
         palette="xRGB_555", pal_entries=1024),
 }
+R68 = lambda tag, gfx, cofs, base, tp: L(tag=tag, gfx=gfx, map=gfx, off=0, len=0x20000, base=base, colors=16,
+                                        transpen=tp, cb="rshark", tile="sprite", rows=32, crom="tmap_hi",
+                                        cofs=cofs, clen=0x20000)
+for _m in ("rshark", "superx"):
+    MACHINES[_m] = dict(
+        layers={"bg0": R68("bg1", "bg0", 0x60000, 1024, None), "bg1": R68("bg2", "bg1", 0x40000, 768, 15),
+                "fg0": R68("fg1", "fg0", 0x20000, 512, 15), "fg1": R68("fg2", "fg1", 0x00000, 256, 15)},
+        text=None, sprites=L(kind="68k"), palette="xRGB_555", pal_entries=2048, pal_be=True)
+MACHINES["popbingo"] = dict(
+    layers={"bg0": L(tag="bg1", gfx="bg0", map="bg0", off=0, len=0x4000, base=0, colors=1, transpen=None, cb="popbingo"),
+            "bg1": L(tag="bg2", gfx="bg1", map="bg1", off=0, len=0x4000, base=0, colors=1, transpen=None, cb="popbingo")},
+    text=None, sprites=L(kind="68k"), palette="xRGB_555", pal_entries=2048, pal_be=True)
+
 VISIBLE = {"primella": (64, 447, 0, 255)}
 DEFAULT_VISIBLE = (64, 447, 8, 247)
 
@@ -134,7 +154,7 @@ def region(setname, tag):
 
 @lru_cache(maxsize=None)
 def gfx(setname, tag, layout_name):
-    lay = {"tile": TILELAYOUT, "sprite": SPRITELAYOUT,
+    lay = {"tile": TILELAYOUT, "sprite": SPRITELAYOUT, "spr68k": SPR68K,
            "lastday": LASTDAY_CHARLAYOUT, "packed": PACKED_8X8}[layout_name]
     return decode_gfx(region(setname, tag), lay)
 
@@ -145,10 +165,11 @@ def map_words(setname, tag):
     return np.frombuffer(b, dtype=">u2").astype(np.int64)
 
 
-def palette_rgb(pal_bytes, fmt, entries):
-    """Palette RAM (little-endian Z80 words) -> (entries+1, 3) uint8; the
-    extra last entry is MAME's black pen used for the background fill."""
-    w = np.frombuffer(pal_bytes[:entries * 2], dtype="<u2").astype(np.int64)
+def palette_rgb(pal_bytes, fmt, entries, big_endian=False):
+    """Palette RAM (little-endian Z80 words, big-endian on the 68000 games,
+    spec 6) -> (entries+1, 3) uint8; the extra last entry is MAME's black pen
+    used for the background fill."""
+    w = np.frombuffer(pal_bytes[:entries * 2], dtype=">u2" if big_endian else "<u2").astype(np.int64)
     if fmt == "xRGB_555":
         r, g, b = (w >> 10) & 31, (w >> 5) & 31, w & 31
         conv = lambda v: (v << 3) | (v >> 2)
@@ -169,12 +190,14 @@ def palette_rgb(pal_bytes, fmt, entries):
 def rom_layer_pixmap(setname, lc, regs, bank):
     """Build the 1024x256 pixmap (pens, opaque mask) of one ROM layer from
     its registers (spec 7.1-7.3). Returns logical (unflipped) orientation."""
-    tiles = gfx(setname, lc["gfx"], "tile")
+    tiles = gfx(setname, lc["gfx"], lc.get("tile", "tile"))
     words = map_words(setname, lc["map"])
     nwords = len(words)
     off = lc["off"] if lc["off"] >= 0 else nwords + lc["off"]
     length = nwords if lc["len"] < 0 else lc["len"]
-    cols, rows, tw = 32, 8, 32
+    tw = tiles.shape[2]
+    rows = lc.get("rows", 8)
+    cols = 1024 // tw
     col = np.arange(cols)[:, None]
     row = np.arange(rows)[None, :]
     idx = col * rows + row + regs[1] * (256 // tw) * rows
@@ -186,8 +209,17 @@ def rom_layer_pixmap(setname, lc, regs, bank):
         flipy = (attr >> 10) & 1
     else:                   # format B (default and bluehawk callback agree)
         a = attr & 0x3FFF
-        code = a & 0x3FF
-        color = (a >> 10) & 15
+        cb = lc.get("cb")
+        if cb == "rshark":      # code 13 bits, colour from the colour ROM (7.4)
+            code = a & 0x1FFF
+            crom = np.frombuffer(region(setname, lc["crom"]), dtype=np.uint8).astype(np.int64)
+            color = crom[lc["cofs"] + (idx & (lc["clen"] - 1))] & 15
+        elif cb == "popbingo":  # code 11 bits, colour 0
+            code = a & 0x7FF
+            color = np.zeros_like(a)
+        else:
+            code = a & 0x3FF
+            color = (a >> 10) & 15
         flipx = (attr >> 14) & 1
         flipy = (attr >> 15) & 1
     color = color | bank
@@ -305,6 +337,51 @@ def draw_z80_sprites(setname, scfg, spr, bitmap, prio, flip, bank, clip):
             pr[solid] = 31
 
 
+def draw_68k_sprites(setname, spr_words, bitmap, prio, flip, clip):
+    """dooyong_68k_state::draw_sprites (driver 689-751): 256 entries of 8
+    words from the last to the first; enable, w/h in tiles, 16-bit code
+    counted row-major, 9-bit X, signed 9-bit Y, colour base 0. Mask
+    GFX_PMASK_4 always, GFX_PMASK_2 as well for colour 0 or 15."""
+    tiles = gfx(setname, "sprite", "spr68k")
+    ntiles = len(tiles)
+    x0, x1, y0, y1 = clip
+    for offs in range(len(spr_words) - 8, -1, -8):
+        if not spr_words[offs] & 1:
+            continue
+        code = int(spr_words[offs + 3])
+        color = int(spr_words[offs + 7]) & 15
+        pmask = 0xF0F0 | (0xCCCC if color in (0, 15) else 0) | (1 << 31)
+        width = int(spr_words[offs + 1]) & 15
+        height = (int(spr_words[offs + 1]) >> 4) & 15
+        sx = int(spr_words[offs + 4]) & 0x1FF
+        sy = int(spr_words[offs + 6]) & 0x1FF
+        if sy & 0x100:
+            sy -= 0x200
+        if flip:
+            sx = 498 - 16 * width - sx
+            sy = 240 - 16 * height - sy
+        for y in range(height + 1):
+            ty = sy + 16 * ((height - y) if flip else y)
+            for x in range(width + 1):
+                tx = sx + 16 * ((width - x) if flip else x)
+                t = tiles[code % ntiles]
+                code += 1
+                if flip:
+                    t = t[::-1, ::-1]
+                ya, yb = max(ty, y0), min(ty + 15, y1)
+                xa, xb = max(tx, x0), min(tx + 15, x1)
+                if ya > yb or xa > xb:
+                    continue
+                sub = t[ya - ty:yb - ty + 1, xa - tx:xb - tx + 1]
+                pr = prio[ya:yb + 1, xa:xb + 1]
+                bm = bitmap[ya:yb + 1, xa:xb + 1]
+                solid = sub != 15
+                allowed = ((np.left_shift(np.int64(1), pr.astype(np.int64) & 31)) & pmask) == 0
+                draw = solid & allowed
+                bm[draw] = 16 * color + sub[draw]
+                pr[solid] = 31
+
+
 # --------------------------------------------------------------------------
 # frame
 # --------------------------------------------------------------------------
@@ -371,6 +448,24 @@ def render(frame_dir, regions_set=None, override=None):
         draw_layer("bg0", 1); draw_layer("fg0", 2); draw_layer("fg1", 4); draw_text(4)
     elif mname in ("lastday", "gulfstrm", "pollux"):
         draw_layer("bg0", 1); draw_layer("fg0", 2); draw_text(4)
+    elif mname in ("rshark", "superx"):
+        bg2 = st.get("m_bg2_priority", [0])[0]
+        draw_layer("bg0", 1); draw_layer("bg1", 2 if bg2 else 1)
+        draw_layer("fg0", 2); draw_layer("fg1", 2)
+    elif mname == "popbingo":
+        # two private bitmaps holding raw pens, combined into 0x100 | bg0 << 4 | bg1
+        comp = []
+        for name in ("bg0", "bg1"):
+            lc = mc["layers"][name]
+            regs = st[f"{lc['tag']}.m_registers"]
+            pb = np.full((SCREEN_H, SCREEN_W), black, dtype=np.int64)
+            if not regs[6] & 0x10:
+                pens, opq = rom_layer_pixmap(setname, lc, regs, 0)
+                p, o = scroll_sample(pens, opq, regs[0], regs[3] | (regs[4] << 8), flip)
+                pb[o] = p[o]
+            comp.append(pb)
+        bitmap[:] = 0x100 | (comp[0] << 4) | comp[1]
+        prio[:] = 1
     elif mname == "primella":
         txpri = st.get("m_tx_pri", [0])[0]
         draw_layer("bg0", 0)
@@ -382,11 +477,14 @@ def render(frame_dir, regions_set=None, override=None):
     else:
         raise NotImplementedError(mname)
 
-    if mc["sprites"] is not None and not (mname == "lastday" and st.get("m_sprites_disabled", [0])[0]):
+    if mc["sprites"] is not None and mc["sprites"].get("kind") == "68k":
+        sw = np.frombuffer(data("spriteram_buf.bin"), dtype=">u2").astype(np.int64)   # 68000 words, big-endian
+        draw_68k_sprites(setname, sw, bitmap, prio, flip, clip)
+    elif mc["sprites"] is not None and not (mname == "lastday" and st.get("m_sprites_disabled", [0])[0]):
         spr = np.frombuffer(data("spriteram_buf.bin"), dtype=np.uint8).astype(np.int64)
         draw_z80_sprites(setname, mc["sprites"], spr, bitmap, prio, flip, bank, clip)
 
-    pal = palette_rgb(data("palette.bin"), mc["palette"], mc["pal_entries"])
+    pal = palette_rgb(data("palette.bin"), mc["palette"], mc["pal_entries"], mc.get("pal_be", False))
     x0, x1, y0, y1 = clip
     return pal[bitmap[y0:y1 + 1, x0:x1 + 1]], bitmap[y0:y1 + 1, x0:x1 + 1]
 
