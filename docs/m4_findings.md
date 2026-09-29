@@ -88,5 +88,11 @@ board soak: section 5.
 Deployed 2026-09-28 22:20 to the MiSTer (found by its MAC address) with
 tools/deploy_mister.sh, new files only, MD5 checked both sides:
 `_Arcade/cores/Dooyong_20260928.rbf`, the 5 MRAs in `_Arcade/`, and
-`games/mame/flytiger.zip`, `bluehawk.zip`. Hardware result: pending the
-first test (M5).
+`games/mame/flytiger.zip`, `bluehawk.zip`.
+
+Hardware result (Lee, 2026-09-28/29): Flying Tiger boots and plays; the
+first build had no keyboard handling (gamepads only), fixed in compile 4
+(MAME-style keys, timing +0.549 ns, RBF md5 5ab961f6, deployed with the
+first build kept as `.bak`). On compile 4: "working perfectly, sound and
+controller, graphics look great." Blue Hawk and the open items (R13 sound
+divergence by ear, DIPs, long play) remain for M5 QA.
