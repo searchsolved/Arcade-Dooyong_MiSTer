@@ -32,7 +32,9 @@ from romdefs import ROOT, parse_driver, zip_index               # noqa: E402
 from build_regions import SDRAM_SLOTS, REGION_SLOT, OUT as REGIONS  # noqa: E402
 
 GAME_ID = {"lastday": 0, "gulfstrm": 1, "pollux": 2, "flytiger": 3, "bluehawk": 4}
-SUPPORTED = ("flytiger", "bluehawk")      # machines the RBF runs so far
+# primella machine config: sadari 5; gundl94 and its clone primella 6
+PRIMELLA_ID = {"sadari": 5, "gundl94": 6}
+SUPPORTED = ("flytiger", "bluehawk", "primella")      # machines the RBF runs so far
 RBF = "Dooyong"
 OUTDIR = ROOT / "releases" / "mra"
 
@@ -237,8 +239,19 @@ def assemble(mra_path, zipdir):
 
 
 # ------------------------------------------------------------------ switches (spec 9.3, driver 1012-1059)
-def switches(machine):
-    sw = ET.Element("switches", default="FF,FF")
+def game_id(setname, sets):
+    rs = sets[setname]
+    if rs.machine == "primella":
+        return PRIMELLA_ID[rs.parent or setname]
+    return GAME_ID[rs.machine]
+
+
+def switches(machine, parent):
+    """DIPs from the driver's INPUT_PORTS (spec 9.3); primella family:
+    SWB:1-2 Show Girl, SWB:5 cabinet, sadari also SWB:7 Girl Show Point
+    (dooyong.cpp 1261-1292), default DSWB 0xFD."""
+    prm = machine == "primella"
+    sw = ET.Element("switches", default="FF,FD" if prm else "FF,FF")
     d = [
         ("Service Mode", "0", "On,Off", None),
         ("Coin Type", "1", "B,A", None),
@@ -248,9 +261,16 @@ def switches(machine):
         # MAME's PORT_CONDITION on coin type B
         ("Coin A", "4,5", "2C/3C,2C/1C,1C/2C,1C/1C", None),
         ("Coin B", "6,7", "2C/3C,2C/1C,1C/2C,1C/1C", None),
-        ("Lives", "8,9", "1,4,2,3", None),
-        ("Difficulty", "10,11", "Hardest,Hard,Easy,Normal", None),
     ]
+    if prm:
+        d.append(("Show Girl", "8,9", "Skip Skip Skip,Dress Half Naked,Dress Half Half,Dress Dress Dress", None))
+    else:
+        d.append(("Lives", "8,9", "1,4,2,3", None))
+    d.append(("Difficulty", "10,11", "Hardest,Hard,Easy,Normal", None))
+    if prm:
+        d.append(("Cabinet", "12", "Cocktail,Upright", None))
+    if prm and parent == "sadari":
+        d.append(("Girl Show Point", "14", "Asia,Other Country", None))
     if machine == "flytiger":
         d.append(("Auto Fire", "14", "Off,On", None))
     d.append(("Allow Continue", "15", "No,Yes", None))
@@ -271,8 +291,7 @@ def title_of(setname):
 
 def make(setname, sets):
     rs = sets[setname]
-    mach = rs.machine if rs.machine in GAME_ID else (sets[rs.parent].machine if rs.parent else rs.machine)
-    mach = mach if mach in GAME_ID else setname
+    parent = rs.parent or setname
     year, maker, title = title_of(setname)
     src = stream_sources(rs)
     rom, _ = rom_element(rs, sets, src)
@@ -282,11 +301,15 @@ def make(setname, sets):
                      ("joystick", "8-way"),
                      ("rotation", "vertical (ccw)" if rs.rot == "ROT270" else "horizontal")):
         ET.SubElement(root, tag).text = val
-    root.append(switches(rs.machine))
-    ET.SubElement(root, "buttons", names="Button 1,Button 2,Start,Coin,Service",
-                  default="A,B,Start,Select,L")
+    root.append(switches(rs.machine, parent))
+    if parent == "sadari":              # P1/P2 bit 6 = Button 3 (spec 9.2)
+        ET.SubElement(root, "buttons", names="Button 1,Button 2,Start,Coin,Service,Button 3",
+                      default="A,B,Start,Select,L,X")
+    else:
+        ET.SubElement(root, "buttons", names="Button 1,Button 2,Start,Coin,Service",
+                      default="A,B,Start,Select,L")
     gid = ET.SubElement(root, "rom", index="1")
-    ET.SubElement(gid, "part").text = f"{GAME_ID[rs.machine]:02X}"
+    ET.SubElement(gid, "part").text = f"{game_id(setname, sets):02X}"
     root.append(rom)
     ET.indent(root, "    ")
     safe = re.sub(r'[\\/:*?"<>|]', "-", title)

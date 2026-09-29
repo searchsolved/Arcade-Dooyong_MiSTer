@@ -17,6 +17,7 @@ Usage: compare_snd.py <ours.txt> <mame_run_dir> [--frames N] [--tol LINES]
 Exit 0 if all streams match and the drift stays within --tol (default 32
 lines, about 2 ms).
 """
+import json
 import sys
 from pathlib import Path
 
@@ -36,6 +37,9 @@ def streams(events):
     return {"ym": ym, "oki": oki, "romw": romw}
 
 
+VBL = 248      # vblank line; 0 (= 256) on the primella family, set in main()
+
+
 def load_ours(p, frames):
     ev = []
     for ln in Path(p).read_text().split("\n"):
@@ -45,7 +49,7 @@ def load_ours(p, frames):
         f, line = int(f), int(line)
         if f >= frames:
             break
-        ev.append((f * 256 + ((line - 248) % 256), int(a, 16), int(d, 16)))
+        ev.append((f * 256 + ((line - VBL) % 256), int(a, 16), int(d, 16)))
     return ev
 
 
@@ -58,12 +62,16 @@ def load_mame(run, frames):
         f, line = int(x[0]), int(x[1])
         if f >= frames:
             break
-        ev.append((f * 256 + ((line - 248) % 256), int(x[7], 16), int(x[8], 16)))
+        ev.append((f * 256 + ((line - VBL) % 256), int(x[7], 16), int(x[8], 16)))
     return ev
 
 
 def main(argv):
+    global VBL
     ours_p, run = argv[0], argv[1]
+    fr = sorted((Path(run) / "frames").glob("*/state.json"))
+    if fr and json.loads(fr[0].read_text())["machine"] == "primella":
+        VBL = 0
     frames = int(argv[argv.index("--frames") + 1]) if "--frames" in argv else 10 ** 9
     tol = int(argv[argv.index("--tol") + 1]) if "--tol" in argv else 32
     o = streams(load_ours(ours_p, frames))

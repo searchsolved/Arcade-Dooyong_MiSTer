@@ -3,7 +3,9 @@
 // The game ID comes from the MRA; everything else is decoded here, so a bad
 // MRA cannot create an illegal configuration (PLAN 4.1). Addresses are byte
 // addresses in the fixed SDRAM layout of PLAN 4.3 / tools/build_regions.py.
-// Z80 family only for now; primella family and the 68000 games come later.
+// Z80 family: lastday, gulfstrm, pollux, flytiger, bluehawk and the
+// primella family (sadari; gundl94 and its clone primella). The 68000 games
+// come later.
 
 package dy_pkg;
 
@@ -12,6 +14,14 @@ package dy_pkg;
   localparam logic [3:0] G_POLLUX   = 4'd2;
   localparam logic [3:0] G_FLYTIGER = 4'd3;
   localparam logic [3:0] G_BLUEHAWK = 4'd4;
+  localparam logic [3:0] G_SADARI   = 4'd5;   // primella machine config
+  localparam logic [3:0] G_GUNDL94  = 4'd6;   // gundl94, primella (same regions)
+
+  // primella family (spec 3.6, 5.3, 11.6): no sprites, 256 visible lines,
+  // vblank at line 256, text priority from ctrl bit 3
+  function automatic logic is_primella(logic [3:0] g);
+    return g == G_SADARI || g == G_GUNDL94;
+  endfunction
 
   // SDRAM layout (PLAN 4.3)
   localparam logic [22:0] SD_TX     = 23'h050000;
@@ -99,6 +109,20 @@ package dy_pkg;
         c.spr_12bit  = 1'b1;
         c.spr_height = 1'b1;
         c.spr_ysh_bh = 1'b1;
+      end
+      G_SADARI, G_GUNDL94: begin
+        // map in the top 32 KB of each tile region (word offset -0x4000,
+        // spec 7.5): 512 KB regions on sadari, 256 KB on gundl94
+        if (g == G_SADARI) begin
+          c.bg0 = lay(SD_BG0, 10'd1023, SD_BG0 + 23'h78000, 16'h3FFF, 1'b1, 10'd768);
+          c.fg0 = lay(SD_FG0, 10'd1023, SD_FG0 + 23'h78000, 16'h3FFF, 1'b0, 10'd512);
+        end else begin
+          c.bg0 = lay(SD_BG0, 10'd511, SD_BG0 + 23'h38000, 16'h3FFF, 1'b1, 10'd768);
+          c.fg0 = lay(SD_FG0, 10'd511, SD_FG0 + 23'h38000, 16'h3FFF, 1'b0, 10'd512);
+        end
+        c.tx_packed  = 1'b1;
+        c.tx_mask    = 12'hFFF;          // 4096 chars (128 KB)
+        c.tx_lane0   = 1'b1;
       end
       default: ;
     endcase

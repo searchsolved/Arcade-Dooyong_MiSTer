@@ -34,6 +34,6 @@ put "$RBF" "/media/fat/_Arcade/cores/$(basename "$RBF")"
 for f in "$ROOT"/releases/mra/*.mra; do
   put "$f" "/media/fat/_Arcade/$(basename "$f")"
 done
-for z in flytiger bluehawk; do
+for z in flytiger bluehawk sadari gundl94; do
   put "$ROOT/roms/$z.zip" "/media/fat/games/mame/$z.zip"
 done

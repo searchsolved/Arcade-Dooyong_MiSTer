@@ -14,6 +14,14 @@ Status 2026-09-28: M0 complete, gate PASS (`docs/m0_findings.md`). M1 and M2
 gates PASS for flytiger and bluehawk (`docs/m1_findings.md`, `docs/m2_findings.md`).
 ROMs (MAME 0.289 merged set) are in `roms/`; the oracle is MAME 0.288.
 
+Decision 2026-09-29 (Lee): all hardware QA (Blue Hawk on hardware, DIPs,
+long play, R13 by ear) is deferred until every game is in the core, then
+done once as M5. Flying Tiger passed its first hardware test on 09-29.
+
+Status 2026-09-29: primella family (sadari, gundl94, primella) through M1,
+M2, M3 and the board sim (`docs/primella_findings.md`); not yet built or
+run on hardware.
+
 ## 1. Scope
 
 Ten parent games, 25 MAME sets (spec 1). Two CPU families:

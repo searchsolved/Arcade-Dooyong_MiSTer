@@ -37,6 +37,16 @@ from dy_render import MACHINES, palette_rgb, render  # noqa: E402
 BIN = HERE.parent / "build" / "m1" / "obj_dir" / "Vdy_video"
 REGIONS = ROOT / "sim" / "build" / "regions"
 GAME_ID = {"lastday": 0, "gulfstrm": 1, "pollux": 2, "flytiger": 3, "bluehawk": 4}
+# primella machine config: sadari 5, gundl94 and its clone primella 6
+PRIMELLA_ID = {"sadari": 5, "gundl94": 6, "primella": 6}
+
+
+def game_id(st):
+    return PRIMELLA_ID[st["set"]] if st["machine"] == "primella" else GAME_ID[st["machine"]]
+
+
+def lines(mname):
+    return 256 if mname == "primella" else 240
 ROT270 = {"lastday", "gulfstrm", "pollux", "flytiger", "bluehawk"}
 LAYER_ORDER = ("bg0", "fg0", "fg1")
 
@@ -65,14 +75,14 @@ def make_dyf(fd, path):
             regs[li * 8:li * 8 + 8] = bytes(v & 0xFF for v in r[:8])
     flags = (bool(st.get("m_flip_screen_x", [0])[0])
              | bool(st.get("m_palette_bank", [0])[0]) << 1
-             | bool(st.get("m_flytiger_pri", [0])[0]) << 2
+             | bool(st.get("m_tx_pri" if mname == "primella" else "m_flytiger_pri", [0])[0]) << 2
              | bool(st.get("m_sprites_disabled", [0])[0]) << 3)
     pal = (fd / "palette.bin").read_bytes()[:mc["pal_entries"] * 2]
     words = np.frombuffer((fd / "text.bin").read_bytes(), dtype=">u2")
     txt = text_cpu_bytes([int(w) for w in words], mc["text"]["layout"] == "packed")
-    spr = (fd / "spriteram_buf.bin").read_bytes()
-    spr = (spr + bytes(4096))[:4096]
-    hdr = b"DYF1" + bytes([GAME_ID[mname], flags]) + len(pal).to_bytes(2, "little")
+    sp = fd / "spriteram_buf.bin"          # none on the primella family
+    spr = ((sp.read_bytes() if sp.exists() else b"") + bytes(4096))[:4096]
+    hdr = b"DYF1" + bytes([game_id(st), flags]) + len(pal).to_bytes(2, "little")
     path.write_bytes(hdr + bytes(regs) + pal + txt + spr)
     return st
 
@@ -82,9 +92,10 @@ def check(fd, st, out_path, diffdir):
     mname = st["machine"]
     mc = MACHINES[mname]
     raw = np.frombuffer(out_path.read_bytes(), dtype=np.uint8)
-    if raw.size != 384 * 240 * 5:
+    h = lines(mname)
+    if raw.size != 384 * h * 5:
         return False, f"size {raw.size}"
-    raw = raw.reshape(240, 384, 5)
+    raw = raw.reshape(h, 384, 5)
     rgb = raw[..., :3].copy()
     pen = raw[..., 3].astype(np.int64) | (raw[..., 4].astype(np.int64) << 8)
     black = (pen >> 11) & 1

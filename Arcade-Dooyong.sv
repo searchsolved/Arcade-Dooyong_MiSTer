@@ -1,5 +1,6 @@
 //============================================================================
-//  Dooyong (Flying Tiger, Blue Hawk, ...) for MiSTer - framework shell (M4)
+//  Dooyong (Flying Tiger, Blue Hawk, Sadari, Gun Dealer '94, ...) for MiSTer
+//  - framework shell (M4)
 //
 //  Wraps rtl/dy_board.sv (CPUs, video, sound, SDRAM, download) in the
 //  Template_MiSTer `emu` interface. The MRA selects the game with the
@@ -59,8 +60,8 @@ localparam CONF_STR = {
 	"DIP;",
 	"-;",
 	"R0,Reset;",
-	"J1,Button 1,Button 2,Start,Coin,Service;",
-	"jn,A,B,Start,Select,L;",
+	"J1,Button 1,Button 2,Start,Coin,Service,Button 3;",
+	"jn,A,B,Start,Select,L,X;",
 	"V,v",`BUILD_DATE
 };
 
@@ -112,11 +113,12 @@ hps_io #(.CONF_STR(CONF_STR)) hps_io (
 // ---------------------------------------------------------------------------
 // keyboard, MAME default keys (ps2_key: [10] toggles per event, [9] pressed,
 // [8] extended, [7:0] set-2 scancode)
-//   P1: arrows, LCtrl = B1, LAlt/Space = B2, 1 = Start, 5 = Coin, 9 = Service
-//   P2: R/F/D/G, A = B1, S = B2, 2 = Start, 6 = Coin
+//   P1: arrows, LCtrl = B1, LAlt/Space = B2, LShift = B3, 1 = Start,
+//       5 = Coin, 9 = Service
+//   P2: R/F/D/G, A = B1, S = B2, Q = B3, 2 = Start, 6 = Coin
 // ---------------------------------------------------------------------------
-reg k_up, k_dn, k_lt, k_rt, k_b1, k_b2, k_b2b, k_st1, k_co1, k_svc;
-reg k2_up, k2_dn, k2_lt, k2_rt, k2_b1, k2_b2, k_st2, k_co2;
+reg k_up, k_dn, k_lt, k_rt, k_b1, k_b2, k_b2b, k_b3, k_st1, k_co1, k_svc;
+reg k2_up, k2_dn, k2_lt, k2_rt, k2_b1, k2_b2, k2_b3, k_st2, k_co2;
 reg ps2_last = 1'b0;
 always @(posedge clk_sys) begin
 	ps2_last <= ps2_key[10];
@@ -129,6 +131,7 @@ always @(posedge clk_sys) begin
 			9'h014: k_b1  <= ps2_key[9];   // left ctrl
 			9'h011: k_b2  <= ps2_key[9];   // left alt
 			9'h029: k_b2b <= ps2_key[9];   // space
+			9'h012: k_b3  <= ps2_key[9];   // left shift
 			9'h016: k_st1 <= ps2_key[9];   // 1
 			9'h01E: k_st2 <= ps2_key[9];   // 2
 			9'h02E: k_co1 <= ps2_key[9];   // 5
@@ -140,23 +143,28 @@ always @(posedge clk_sys) begin
 			9'h034: k2_rt <= ps2_key[9];   // G
 			9'h01C: k2_b1 <= ps2_key[9];   // A
 			9'h01B: k2_b2 <= ps2_key[9];   // S
+			9'h015: k2_b3 <= ps2_key[9];   // Q
 			default: ;
 		endcase
 	end
 end
-// joystick layout: 0 R, 1 L, 2 D, 3 U, 4 B1, 5 B2, 6 Start, 7 Coin, 8 Service
-wire [8:0] joy0 = joystick_0[8:0] | {k_svc, k_co1, k_st1, k_b2 | k_b2b, k_b1, k_up, k_dn, k_lt, k_rt};
-wire [8:0] joy1 = joystick_1[8:0] | {1'b0, k_co2, k_st2, k2_b2, k2_b1, k2_up, k2_dn, k2_lt, k2_rt};
+// joystick layout: 0 R, 1 L, 2 D, 3 U, 4 B1, 5 B2, 6 Start, 7 Coin, 8 Service,
+// 9 B3
+wire [9:0] joy0 = joystick_0[9:0] | {k_b3, k_svc, k_co1, k_st1, k_b2 | k_b2b, k_b1, k_up, k_dn, k_lt, k_rt};
+wire [9:0] joy1 = joystick_1[9:0] | {k2_b3, 1'b0, k_co2, k_st2, k2_b2, k2_b1, k2_up, k2_dn, k2_lt, k2_rt};
 
 // ---------------------------------------------------------------------------
 // inputs, active low (spec 9.2). MiSTer joystick: 0 R, 1 L, 2 D, 3 U, then
-// the J1 list: 4 Button 1, 5 Button 2, 6 Start, 7 Coin, 8 Service.
-// P1/P2: 0 R, 1 L, 2 D, 3 U, 4 B1, 5 B2. SYSTEM: 0 Coin1, 1 Start1,
+// the J1 list: 4 Button 1, 5 Button 2, 6 Start, 7 Coin, 8 Service,
+// 9 Button 3. P1/P2: 0 R, 1 L, 2 D, 3 U, 4 B1, 5 B2, 6 B3 on sadari only
+// (spec 9.2; unknown bits read 1 elsewhere). SYSTEM: 0 Coin1, 1 Start1,
 // 2 Coin2, 3 Start2, 4 Service. (lastday/gulfstrm/pollux use other SYSTEM
 // orders; they are not in this build.)
 // ---------------------------------------------------------------------------
-wire [7:0] p1  = ~{2'b00, joy0[5:4], joy0[3:0]};
-wire [7:0] p2  = ~{2'b00, joy1[5:4], joy1[3:0]};
+wire [3:0] game;
+wire       b3_on = (game == 4'd5);   // sadari
+wire [7:0] p1  = ~{1'b0, b3_on & joy0[9], joy0[5:4], joy0[3:0]};
+wire [7:0] p2  = ~{1'b0, b3_on & joy1[9], joy1[5:4], joy1[3:0]};
 wire [7:0] sys = ~{3'b000, joy0[8] | joy1[8], joy1[6], joy1[7], joy0[6], joy0[7]};
 
 // ---------------------------------------------------------------------------
@@ -167,7 +175,6 @@ wire reset = RESET | status[0] | buttons[1];
 wire [7:0] r, g, b;
 wire       hbl, vbl, hs, vs, de, ce_pix;
 wire signed [15:0] audio;
-wire [3:0] game;
 
 dy_board #(.CPU_DIV(12), .CLK_HZ(96000000), .V_TOTAL(260), .PIX_NUM(1), .PIX_DEN(12)) board (
 	.clk(clk_sys), .i_sdram_rst_n(pll_locked), .i_reset(reset),
@@ -185,11 +192,12 @@ dy_board #(.CPU_DIV(12), .CLK_HZ(96000000), .V_TOTAL(260), .PIX_NUM(1), .PIX_DEN
 );
 
 // ---------------------------------------------------------------------------
-// video: 384 x 240, rotated for the vertical games
+// video: 384 x 240 (384 x 256 on the primella family), rotated for the
+// vertical games
 // ---------------------------------------------------------------------------
 // flytiger and bluehawk are ROT270 in MAME: turn the picture 90 degrees
 // counter-clockwise to stand it upright
-wire vertical   = (game <= 4'd4);        // every Z80-family game so far is ROT270
+wire vertical   = (game <= 4'd4);        // lastday..bluehawk ROT270; primella family ROT0
 wire no_rotate  = status[2] | direct_video | ~vertical;
 wire rotate_ccw = 1'b1;
 wire flip       = 1'b0;

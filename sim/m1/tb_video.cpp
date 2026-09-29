@@ -13,6 +13,9 @@
 //   bytes (CPU offsets, per-game layout), 4096 sprite bytes.
 // Output (.rgbp): 384 x 240 x 5 bytes: R, G, B, pen low, pen high
 // (pen bit 11 = black pen).
+// Primella family (game 5, 6; flags bit 2 = text below fg0): these games
+// latch at the start of line 255 and show lines 0-255, so each frame is
+// loaded at line 255 (palette at line 0) and captured as 384 x 256 x 5 bytes.
 //
 // Plusargs: +sdram=FILE +list=FILE (lines "in out") +div=N (clocks per
 // pixel, default 12 = 96 MHz / 8 MHz). ROM model: pipelined, in order; one
@@ -107,16 +110,55 @@ int main(int argc, char **argv) {
     };
     if (!load(frames[0].first)) { fprintf(stderr, "bad frame %s\n", frames[0].first.c_str()); return 2; }
     top->i_game = fb[4];
+    const bool prm = fb[4] == 5 || fb[4] == 6;
+    const int start_line = prm ? 255 : 248, lines = prm ? 256 : 240;
     top->rst_n = 0;
     top->i_pal_we = top->i_txt_we = top->i_spr_we = top->i_tm_we = 0;
     for (int i = 0; i < 16; i++) tick(false);
     top->rst_n = 1;
     tick(false);
-    // advance to the start of line 248 (ce not yet given for h=0, v=248)
+    // advance to the start of the latch line (ce not yet given for h=0)
     bool dummy;
-    for (long i = 0; i < 248L * 512; i++) run_pixel(dummy);
+    for (long i = 0; i < (long)start_line * 512; i++) run_pixel(dummy);
 
     int bad = 0;
+    // CPU writes with the pixel enable stopped
+    auto wr = [&](int which, int a, uint8_t d) {
+        top->i_cpu_addr = a; top->i_cpu_din = d;
+        top->i_pal_we = which == 0; top->i_txt_we = which == 1; top->i_spr_we = which == 2;
+        tick(false);
+        top->i_pal_we = top->i_txt_we = top->i_spr_we = 0;
+    };
+    auto capture = [&](std::vector<uint8_t> &out, long npix) {
+        for (long i = 0; i < npix; i++) {
+            run_pixel(dummy);
+            if (top->o_de) {
+                out.push_back(top->o_r);
+                out.push_back(top->o_g);
+                out.push_back(top->o_b);
+                out.push_back(top->o_pen & 0xFF);
+                out.push_back(top->o_pen >> 8);
+            }
+        }
+    };
+    auto finish = [&](const std::string &in, const std::string &outp, const std::vector<uint8_t> &out,
+                      uint16_t over0) {
+        if (out.size() != 384u * lines * 5) {
+            fprintf(stderr, "%s: captured %zu pixels\n", in.c_str(), out.size() / 5);
+            bad++;
+        }
+        std::ofstream o(outp, std::ios::binary);
+        o.write((const char *)out.data(), out.size());
+        printf("FRAME %s overruns %d maxcyc %d\n", in.c_str(),
+               (int)(uint16_t)(top->o_dbg_overruns - over0), (int)top->o_dbg_maxcyc);
+    };
+    // primella: frame k's line 255 is scanned out during the line in which
+    // frame k+1 latches (line 255 renders line 0), so frame k+1's text and
+    // registers go in at the start of line 255 and its palette (read live at
+    // scan-out) at the start of line 0, after frame k's last line
+    std::vector<uint8_t> prev;
+    std::string prev_in, prev_out;
+    uint16_t prev_over0 = 0;
     for (auto &fr : frames) {
         if (!load(fr.first)) { fprintf(stderr, "bad frame %s\n", fr.first.c_str()); return 2; }
         int flags = fb[5];
@@ -126,14 +168,8 @@ int main(int argc, char **argv) {
         const uint8_t *txt = pal + npal;
         const uint8_t *spr = txt + 4096;
         uint16_t over0 = top->o_dbg_overruns;
-        // CPU writes with the pixel enable stopped
-        auto wr = [&](int which, int a, uint8_t d) {
-            top->i_cpu_addr = a; top->i_cpu_din = d;
-            top->i_pal_we = which == 0; top->i_txt_we = which == 1; top->i_spr_we = which == 2;
-            tick(false);
-            top->i_pal_we = top->i_txt_we = top->i_spr_we = 0;
-        };
-        for (int a = 0; a < npal; a++) wr(0, a, pal[a]);
+        if (!prm)
+            for (int a = 0; a < npal; a++) wr(0, a, pal[a]);
         for (int a = 0; a < 4096; a++) wr(1, a, txt[a]);
         for (int a = 0; a < 4096; a++) wr(2, a, spr[a]);
         for (int l = 0; l < 3; l++)
@@ -148,25 +184,28 @@ int main(int argc, char **argv) {
         top->i_spr_disable = (flags >> 3) & 1;
 
         std::vector<uint8_t> out;
-        out.reserve(384 * 240 * 5);
-        for (long i = 0; i < 256L * 512; i++) {
-            run_pixel(dummy);
-            if (top->o_de) {
-                out.push_back(top->o_r);
-                out.push_back(top->o_g);
-                out.push_back(top->o_b);
-                out.push_back(top->o_pen & 0xFF);
-                out.push_back(top->o_pen >> 8);
+        out.reserve(384 * lines * 5);
+        if (prm) {
+            std::vector<uint8_t> tail;
+            capture(tail, 512);                            // line 255 of the previous frame
+            if (!prev_in.empty()) {
+                prev.insert(prev.end(), tail.begin(), tail.end());
+                finish(prev_in, prev_out, prev, prev_over0);
             }
+            for (int a = 0; a < npal; a++) wr(0, a, pal[a]);
+            capture(out, 255L * 512);                     // lines 0-254
+            prev = std::move(out);
+            prev_in = fr.first;
+            prev_out = fr.second;
+            prev_over0 = over0;
+        } else {
+            capture(out, 256L * 512);
+            finish(fr.first, fr.second, out, over0);
         }
-        if (out.size() != 384 * 240 * 5) {
-            fprintf(stderr, "%s: captured %zu pixels\n", fr.first.c_str(), out.size() / 5);
-            bad++;
-        }
-        std::ofstream o(fr.second, std::ios::binary);
-        o.write((const char *)out.data(), out.size());
-        printf("FRAME %s overruns %d maxcyc %d\n", fr.first.c_str(),
-               (int)(uint16_t)(top->o_dbg_overruns - over0), (int)top->o_dbg_maxcyc);
+    }
+    if (prm && !prev_in.empty()) {
+        capture(prev, 512);
+        finish(prev_in, prev_out, prev, prev_over0);
     }
     printf("DONE frames %zu bad %d cycles %llu\n", frames.size(), bad, (unsigned long long)cycles);
     top->final();

@@ -1,7 +1,7 @@
 // Dooyong sound system, YM2151 variant (PLAN M3; spec 2, 4): sound Z80,
 // sound ROM (BRAM), 2 KB RAM, sound latch, YM2151 (jt51), M6295 (jt6295).
-// Used by flytiger and bluehawk (and later the primella family and the
-// 68000 games, which share this map).
+// Used by flytiger, bluehawk and the primella family (and later the 68000
+// games, which share this map).
 //
 // Sound map (spec 4, YM2151 games): 0x0000-0xEFFF ROM, 0xF000-0xF7FF RAM,
 // 0xF800 latch (read; no NMI, reading does not clear), 0xF808-0xF809
@@ -11,7 +11,8 @@
 // Clock enables from the system clock:
 //   CPU  : clk / CPU_DIV (4 MHz)
 //   YM   : fractional YM_NUM / YM_DEN of clk (3.579545 MHz on flytiger,
-//          bluehawk "3.579545MHz or 4Mhz ???" in MAME, spec 2); cen_p1 is
+//          bluehawk "3.579545MHz or 4Mhz ???" in MAME, spec 2), or
+//          YM4_NUM / YM_DEN with i_ym_4m (4 MHz, primella family); cen_p1 is
 //          every other YM enable, as jt51 expects
 //   OKI  : clk / OKI_DIV (1 MHz), pin 7 high (ss = 1, sample rate /132)
 //
@@ -25,6 +26,7 @@
 module dy_snd #(
     parameter int CPU_DIV = 24,
     parameter int YM_NUM  = 3579545,
+    parameter int YM4_NUM = 4000000,  // with i_ym_4m (primella family)
     parameter int YM_DEN  = 96000000,
     parameter int OKI_DIV = 96,
     parameter int YM_GAIN  = 90,     // x/256: 0.352
@@ -32,6 +34,7 @@ module dy_snd #(
 ) (
     input  logic        clk,
     input  logic        rst_n,
+    input  logic        i_ym_4m,       // YM clock YM4_NUM / YM_DEN instead
 
     // sound ROM download (64 KB)
     input  logic        i_dl_we,
@@ -58,6 +61,7 @@ module dy_snd #(
   logic [5:0]  cpu_cnt, oki_cnt;
   logic        ce_cpu, ym_cen, ym_ph, oki_cen;
   logic [27:0] ym_acc;
+  wire  [27:0] ym_num = i_ym_4m ? 28'(YM4_NUM) : 28'(YM_NUM);
   always_ff @(posedge clk) begin
     if (!rst_n) begin
       cpu_cnt <= '0;
@@ -72,12 +76,12 @@ module dy_snd #(
       cpu_cnt <= (cpu_cnt == 6'(CPU_DIV - 1)) ? 6'd0 : cpu_cnt + 6'd1;
       oki_cen <= (oki_cnt == 6'd0);
       oki_cnt <= (oki_cnt == 6'(OKI_DIV - 1)) ? 6'd0 : oki_cnt + 6'd1;
-      if (ym_acc + 28'(YM_NUM) >= 28'(YM_DEN)) begin
-        ym_acc <= ym_acc + 28'(YM_NUM) - 28'(YM_DEN);
+      if (ym_acc + ym_num >= 28'(YM_DEN)) begin
+        ym_acc <= ym_acc + ym_num - 28'(YM_DEN);
         ym_cen <= 1'b1;
         ym_ph  <= !ym_ph;
       end else begin
-        ym_acc <= ym_acc + 28'(YM_NUM);
+        ym_acc <= ym_acc + ym_num;
         ym_cen <= 1'b0;
       end
     end

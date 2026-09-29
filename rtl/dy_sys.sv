@@ -16,7 +16,7 @@
 // Program ROM is in BRAM (zero wait states, as MAME's Z80 has none; no
 // SDRAM arbitration with the renderer). Loaded through the download port.
 //
-// Games: flytiger and bluehawk memory maps (spec 3.4, 3.5).
+// Games: flytiger, bluehawk and primella-family memory maps (spec 3.4-3.6).
 
 module dy_sys #(
     parameter int CPU_DIV = 12,
@@ -134,10 +134,11 @@ module dy_sys #(
   // ================================================================ decode
   wire is_ft = (i_game == G_FLYTIGER);
   wire is_bh = (i_game == G_BLUEHAWK);
+  wire is_pr = is_primella(i_game);
   wire mem   = !mreq_n && rfsh_n;
 
   typedef enum logic [3:0] {
-    D_NONE, D_ROM, D_BANK, D_WRAM, D_SPR, D_PAL, D_TXT, D_IO
+    D_NONE, D_ROM, D_BANK, D_WRAM, D_SPR, D_PAL, D_TXT, D_IO, D_XRAM
   } dsel_t;
   dsel_t sel;
   always_comb begin
@@ -158,6 +159,16 @@ module dy_sys #(
         4'hD: sel = D_TXT;
         4'hE: sel = D_SPR;
         4'hF: sel = D_WRAM;
+        default: ;
+      endcase
+    end else if (is_pr) begin
+      // C000 work RAM, D000-D3FF extra RAM ("scratchpad?", T15), E000 text,
+      // F000-F7FF palette (write-only: reads are unmapped = 0), F800 I/O
+      case (A[15:12])
+        4'hC: sel = D_WRAM;
+        4'hD: sel = (A[11:10] == 2'b00) ? D_XRAM : D_NONE;
+        4'hE: sel = D_TXT;
+        4'hF: sel = A[11] ? D_IO : D_PAL;
         default: ;
       endcase
     end
@@ -182,6 +193,13 @@ module dy_sys #(
     .addr_a(A[11:0]), .d_a(cpu_dout), .we_a(wr && sel == D_WRAM), .be_a(1'b1), .q_a(wram_q),
     .addr_b(12'd0), .q_b());
 
+  // primella family 0xD000-0xD3FF
+  logic [7:0] xram_q;
+  dy_dpram #(.AW(10), .DW(8)) u_xram (
+    .clk(clk),
+    .addr_a(A[9:0]), .d_a(cpu_dout), .we_a(wr && sel == D_XRAM), .be_a(1'b1), .q_a(xram_q),
+    .addr_b(10'd0), .q_b());
+
   // ================================================================ registers
   logic [7:0] ctrl;
   logic       flip, pal_bank, pri_swap;
@@ -195,10 +213,14 @@ module dy_sys #(
       pri_swap = ctrl[4];
     end else if (is_bh) begin
       flip     = ctrl != 8'd0;          // whole byte (spec 9.1)
+    end else if (is_pr) begin
+      flip     = ctrl[4];
+      pri_swap = ctrl[3];               // text layer below fg0 (spec 11.6)
     end
   end
 
-  // I/O page offsets (A[11:0] within 0xE000 on flytiger, 0xC000 on bluehawk)
+  // I/O page offsets (A[11:0] within 0xE000 on flytiger, 0xC000 on bluehawk,
+  // 0xF000 on the primella family)
   wire [11:0] io = A[11:0];
   logic       tm_we;
   logic [1:0] tm_layer;
@@ -223,6 +245,11 @@ module dy_sys #(
         if (io[11:3] == 9'h003) begin tm_we = 1'b1; tm_layer = 2'd2; end   // C018-C01F fg1
         if (io[11:3] == 9'h008) begin tm_we = 1'b1; tm_layer = 2'd0; end   // C040-C047 bg0
         if (io[11:3] == 9'h009) begin tm_we = 1'b1; tm_layer = 2'd1; end   // C048-C04F fg0
+      end else if (is_pr) begin
+        io_ctrl_w  = io == 12'h800;                                         // primella_ctrl_w (+ bank)
+        io_latch_w = io == 12'h810;
+        if (io[11:3] == 9'h180) begin tm_we = 1'b1; tm_layer = 2'd0; end   // FC00-FC07 bg0
+        if (io[11:3] == 9'h181) begin tm_we = 1'b1; tm_layer = 2'd1; end   // FC08-FC0F fg0
       end
     end
   end
@@ -248,6 +275,15 @@ module dy_sys #(
         12'h004: io_q = i_system;
         default: ;
       endcase
+    end else if (is_pr) begin
+      case (io)
+        12'h800: io_q = i_dswa;
+        12'h810: io_q = i_dswb;
+        12'h820: io_q = i_p1;
+        12'h830: io_q = i_p2;
+        12'h840: io_q = i_system;
+        default: ;
+      endcase
     end
   end
 
@@ -265,6 +301,7 @@ module dy_sys #(
         if (cpu_dout[7:3] != 5'd0) o_dbg_bank_hi <= o_dbg_bank_hi + 16'd1;
       end
       if (io_ctrl_w) ctrl <= cpu_dout;
+      if (io_ctrl_w && is_pr) bank <= cpu_dout[2:0];   // ctrl bits 0-2 (spec 3.1)
       if (io_latch_w) begin
         o_snd_latch    <= cpu_dout;
         o_snd_latch_we <= 1'b1;
@@ -308,7 +345,8 @@ module dy_sys #(
         D_ROM, D_BANK: cpu_din <= rom_q;
         D_WRAM:        cpu_din <= wram_q;
         D_SPR:         cpu_din <= spr_q;
-        D_PAL:         cpu_din <= pal_q;
+        D_PAL:         cpu_din <= is_pr ? 8'h00 : pal_q;
+        D_XRAM:        cpu_din <= xram_q;
         D_TXT:         cpu_din <= txt_q;
         D_IO:          cpu_din <= io_q;
         default:       cpu_din <= 8'h00;
@@ -317,8 +355,11 @@ module dy_sys #(
   end
 
   // ================================================================ sound
-  dy_snd #(.CPU_DIV(2 * CPU_DIV), .YM_NUM(3579545), .YM_DEN(CLK_HZ), .OKI_DIV(8 * CPU_DIV)) u_snd (
-    .clk(clk), .rst_n(rst_n),
+  // YM2151 3.579545 MHz (flytiger, bluehawk), 4 MHz on the primella family
+  // (16 MHz / 4, spec 2)
+  dy_snd #(.CPU_DIV(2 * CPU_DIV), .YM_NUM(3579545), .YM4_NUM(4000000), .YM_DEN(CLK_HZ),
+           .OKI_DIV(8 * CPU_DIV)) u_snd (
+    .clk(clk), .rst_n(rst_n), .i_ym_4m(is_pr),
     .i_dl_we(i_dl_we && i_dl_addr[17]), .i_dl_addr(i_dl_addr[15:0]), .i_dl_data(i_dl_data),
     .i_latch(o_snd_latch),
     .o_oki_addr(o_oki_addr), .i_oki_data(i_oki_data), .i_oki_ok(i_oki_ok),

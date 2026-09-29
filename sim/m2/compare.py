@@ -17,6 +17,11 @@ line-accurate model of those live reads (line_check), built from our RAM
 dumps at vblank N, the logged writes (.wlog) and, for registers changed in
 the active lines, MAME's write log; anything else is a failure.
 
+Primella family (sadari, gundl94): the frame is all 256 lines, vblank is at
+line 256 (= line 0) and the registers latch at the start of line 255, so our
+displayed frame N is MAME frame N (OFFSET = 0), beam positions count from
+line 0 and every line 0-255 is checked.
+
 Usage: compare.py <cap_dir> <mame_run_dir> [--offset K] [--search] [--quiet]
   --search: for every frame try offsets -8..8 and report the best.
 Exit 0 only if every captured frame matches or is explained, and every RAM
@@ -35,11 +40,11 @@ from dy_render import MACHINES, render  # noqa: E402
 ROT270 = {"lastday", "gulfstrm", "pollux", "flytiger", "bluehawk"}
 
 
-def load_ours(p):
+def load_ours(p, h=240):
     raw = np.frombuffer(p.read_bytes(), dtype=np.uint8)
-    if raw.size != 384 * 240 * 5:
+    if raw.size != 384 * h * 5:
         return None, None
-    raw = raw.reshape(240, 384, 5)
+    raw = raw.reshape(h, 384, 5)
     pen = raw[..., 3].astype(np.int64) | (raw[..., 4].astype(np.int64) << 8)
     return raw[..., :3].copy(), pen
 
@@ -61,8 +66,11 @@ def mame_view(fd, rgb, pen, nent, machine):
     return np.rot90(view, 1) if machine in ROT270 else view
 
 
-def _pos(line, hpos):
-    """Beam position counted from the start of line 248 (our vblank IRQ)."""
+def _pos(line, hpos, machine=None):
+    """Beam position counted from our vblank IRQ: the start of line 248, or
+    of line 0 on the primella family."""
+    if machine == "primella":
+        return line * 512 + hpos
     return ((line - 248) % 256) * 512 + hpos
 
 
@@ -71,6 +79,10 @@ def latched_state(st, regw, machine):
     during the active lines put back to its value before the change, i.e.
     what our latch took at line 7."""
     st = json.loads(json.dumps(st))
+    if machine == "primella":
+        # latched at line 255, MAME draws at line 256: the games write their
+        # registers in lines 0-10 (spec 5.4), nothing to put back
+        return st
     seen = set()
     for line, a, _d, old in regw:
         if not 7 <= line <= 247 or a in seen or old is None:
@@ -116,8 +128,14 @@ def line_check(fd, cap, n, rgb, machine, regw=()):
             continue
         line, h, a, d = ln.split()
         line, h, a, d = int(line), int(h), int(a, 16), int(d, 16)
-        t = _pos(line, h)
-        if machine == "flytiger":
+        t = _pos(line, h, machine)
+        if machine == "primella":
+            if 0xE000 <= a <= 0xEFFF:
+                o = a & 0xFFF
+                tw.append((t, 2 * (o >> 1) + (0 if o & 1 else 1), d))
+            elif 0xF000 <= a <= 0xF7FF:
+                pw.append((t, a & 0x7FF, d))
+        elif machine == "flytiger":
             if a >= 0xF000:
                 o = a & 0xFFF
                 tw.append((t, 2 * (o & 0x7FF) + (0 if o & 0x800 else 1), d))
@@ -148,17 +166,25 @@ def line_check(fd, cap, n, rgb, machine, regw=()):
         return cache[(kt, kp)]
 
     bad = 0
-    for y in range(8, 248):
+    prm = machine == "primella"
+    y0, y1 = (0, 255) if prm else (8, 247)
+    for y in range(y0, y1 + 1):
         # every prefix of the writes inside the read window: cells read
-        # before a write see the old value, cells read after it the new one
-        kts = range(upto(tw, _pos(y - 1, 0)), upto(tw, _pos(y, 0)) + 1)
-        kps = range(upto(pw, _pos(y, 0)), upto(pw, _pos(y + 1, 0) if y < 247 else 256 * 512) + 1)
+        # before a write see the old value, cells read after it the new one.
+        # Primella line 0 is rendered during the last line before our dump,
+        # so it reads the dumped text.
+        if prm and y == 0:
+            kts = range(0, 1)
+        else:
+            kts = range(upto(tw, _pos(y - 1, 0, machine)), upto(tw, _pos(y, 0, machine)) + 1)
+        kps = range(upto(pw, _pos(y, 0, machine)),
+                    upto(pw, _pos(y + 1, 0, machine) if y < y1 else 256 * 512) + 1)
         ok = np.zeros(384, dtype=bool)
         # window boundaries first; intermediate states only where needed
         combos = [(kt, kp) for kt in (kts[0], kts[-1]) for kp in (kps[0], kps[-1])]
         combos += [(kt, kp) for kt in kts for kp in kps if (kt, kp) not in combos]
         for kt, kp in combos:
-            ok |= np.all(rows(kt, kp)[y - 8] == rgb[y - 8], axis=-1)
+            ok |= np.all(rows(kt, kp)[y - y0] == rgb[y - y0], axis=-1)
             if ok.all():
                 break
         bad += int((~ok).sum())
@@ -180,6 +206,8 @@ def reg_changes(run, machine):
         if f[6] == "ctrl":
             if machine == "flytiger":
                 changed = old is None or ((old ^ d) & 0x19) != 0    # flip, bank, priority
+            elif machine == "primella":
+                changed = old is None or ((old ^ d) & 0x18) != 0    # text priority, flip
             else:
                 changed = old is None or (old != 0) != (d != 0)     # bluehawk flip
         else:
@@ -191,17 +219,20 @@ def reg_changes(run, machine):
 
 def main(argv):
     cap, run = Path(argv[0]), Path(argv[1])
-    off = int(argv[argv.index("--offset") + 1]) if "--offset" in argv else 1
+    frames = run / "frames"
+    first = next(p for p in sorted(frames.iterdir()) if (p / "state.json").exists())
+    machine0 = json.loads((first / "state.json").read_text())["machine"]
+    prm = machine0 == "primella"
+    off = int(argv[argv.index("--offset") + 1]) if "--offset" in argv else (0 if prm else 1)
     search = "--search" in argv
     quiet = "--quiet" in argv
-    frames = run / "frames"
     regs_by_frame = None
     ok_img = bad_img = ok_ram = bad_ram = 0
     explained = 0
     explained_whole = 0
     for p in sorted(cap.glob("*.rgbp")):
         n = int(p.stem)
-        rgb, pen = load_ours(p)
+        rgb, pen = load_ours(p, 256 if prm else 240)
         if rgb is None:
             print(f"SHORT {n}")
             bad_img += 1
@@ -231,7 +262,7 @@ def main(argv):
             if regs_by_frame is None:
                 regs_by_frame = reg_changes(run, st["machine"])
             regw = regs_by_frame.get(n + off, [])
-            whole = any(7 <= w[0] <= 247 for w in regw)
+            whole = any(w[0] <= 254 if prm else 7 <= w[0] <= 247 for w in regw)
             wl = cap / f"{n:06d}.wlog"
             nw = len(wl.read_text().split("\n")) - 1 if wl.exists() else 0
             lc_bad = None
@@ -241,7 +272,8 @@ def main(argv):
                 explained += 1
                 explained_whole += whole
                 note = (f"LINE-EXACT against the live-read model ({nw} active-line writes, {nrend} states"
-                        + (", registers as latched at line 7)" if whole else ")"))
+                        + ((", registers as latched at line 255)" if prm else ", registers as latched at line 7)")
+                           if whole else ")"))
                 if not quiet:
                     print(f"EXPL  disp {n}: {best[0]} px vs MAME, {note}")
                 continue
@@ -264,6 +296,8 @@ def main(argv):
             continue
         res = []
         for ext, name in ((".pal", "palette.bin"), (".txt", "text.bin"), (".spr", "spriteram_live.bin")):
+            if not (fd / name).exists():            # no sprite RAM on the primella family
+                continue
             ours = (cap / f"{n:06d}{ext}").read_bytes()
             theirs = (fd / name).read_bytes()
             m = min(len(ours), len(theirs))

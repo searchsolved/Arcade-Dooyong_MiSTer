@@ -3,8 +3,9 @@
 // Downloads the main CPU ROM from the set's sdram.bin, resets, and runs the
 // system from power-on. Displayed frame N = the pixels scanned out between
 // vblank IRQ N and N+1 (vblank N = the N-th start of line 248, MAME's frame
-// notifier). Requested frames are written as .rgbp (384 x 240 x 5: R, G, B,
-// pen low, pen high), and at each requested vblank the video RAMs are dumped
+// notifier; line 256 = 0 on the primella family). Requested frames are
+// written as .rgbp (384 x 240 x 5, or 384 x 256 x 5 on the primella family:
+// R, G, B, pen low, pen high), and at each requested vblank the video RAMs are dumped
 // in the oracle's byte order (.pal/.txt/.spr/.wram). For each requested
 // displayed frame, every CPU write to 0xC000-0xFFFF during it is logged in
 // .wlog ("line hpos addr data", beam position at the write).
@@ -93,6 +94,8 @@ int main(int argc, char **argv) {
     lat = atoi(plus("lat", "5").c_str());
     intv = atoi(plus("intv", "4").c_str());
     int game = atoi(plus("game", "3").c_str());
+    // primella family (5, 6): 256 visible lines, vblank at line 256
+    const size_t frame_px = (game == 5 || game == 6) ? 384 * 256 : 384 * 240;
     okilat = atoi(plus("okilat", "8").c_str());
     std::string sndf = plus("snd", ""), wavf = plus("wav", "");
     FILE *fsnd = sndf.empty() ? nullptr : fopen(sndf.c_str(), "w");
@@ -198,7 +201,7 @@ int main(int argc, char **argv) {
             if (frame > 0 && cap.count(frame)) {
                 char fn[64];
                 snprintf(fn, sizeof fn, "%s/%06ld.rgbp", out.c_str(), frame);
-                if (px.size() != 384 * 240 * 5)
+                if (px.size() != frame_px * 5)
                     fprintf(stderr, "frame %ld: %zu pixels\n", frame, px.size() / 5);
                 dump(fn, px.data(), px.size());
                 snprintf(fn, sizeof fn, "%s/%06ld.wlog", out.c_str(), frame);

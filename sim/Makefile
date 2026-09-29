@@ -17,7 +17,7 @@
 # M1 targets (Verilator; needs `make regions` and the oracle captures):
 #   make m1-build        build the dy_video frame-replay harness
 #   make m1-verify       RTL vs MAME on every flytiger/bluehawk capture (gate)
-#   make m1-extra        RTL vs MAME on the lastday/gulfstrm/pollux samples
+#   make m1-extra        RTL vs MAME on the lastday/gulfstrm/pollux/sadari/gundl94 samples
 #   make m1-synth        synthetic scenes vs the Python renderer (gate)
 #
 # M2 targets:
@@ -25,6 +25,7 @@
 #   make m2-boot         flytiger + bluehawk from power-on through both MAME
 #                        attract captures (8,800 / 9,000 frames, about 35 min
 #                        each, run in parallel), compared with MAME (gate)
+#   make m2-primella     sadari + gundl94 boot, images, RAM, sound streams, audio
 #   make m2-soak         flytiger 20,000 frames, gate counters must stay 0
 #
 # M3 targets (sound; the dy_sys harness includes the sound CPU, jt51, jt6295):
@@ -60,7 +61,7 @@ FLIP_FRAMES := 1-3000/10
 
 EXTRA   := lastday gulfstrm pollux sadari gundl94
 
-.PHONY: m4-mra m4-build m4-boot m3 m3-wav m2-build m2-boot m2-soak m1-build m1-verify m1-extra m1-synth roms-check regions mame-regions oracle oracle-flytiger oracle-bluehawk \
+.PHONY: m4-mra m4-build m4-boot m3 m3-wav m3-wav-primella m2-primella m2-build m2-boot m2-soak m1-build m1-verify m1-extra m1-synth roms-check regions mame-regions oracle oracle-flytiger oracle-bluehawk \
         oracle-verify oracle-extra survey analyze m0 clean-out
 
 roms-check:
@@ -137,7 +138,7 @@ m1-verify: $(M1BIN)
 	$(PY) m1/replay.py $(M1RUNS) --quiet
 
 # primella family (sadari, gundl94) not in the M1 RTL yet
-M1EXTRA := lastday gulfstrm pollux
+M1EXTRA := lastday gulfstrm pollux sadari gundl94
 m1-extra: $(M1BIN)
 	$(PY) m1/replay.py $(addprefix $(OUT)/extra_,$(M1EXTRA)) --quiet
 
@@ -175,6 +176,29 @@ m2-soak: $(M2BIN)
 	mkdir -p $(M2OUT)/soak && : > $(M2OUT)/soak/cap.txt
 	$(M2BIN) +game=3 +sdram=build/regions/flytiger/sdram.bin +frames=20000 \
 	  +cap=$(M2OUT)/soak/cap.txt +out=$(M2OUT)/soak | tail -n 1
+
+# primella family (sadari 5, gundl94 6): boot through the oracle-extra runs
+# (300 sampled frames of 9,000), sound streams logged; DSWB 0xFD = MAME
+# default. About 1 h, both in parallel.
+m2-primella: $(M2BIN)
+	@for g in sadari:5 gundl94:6; do s=$${g%:*}; id=$${g#*:}; o=$(M2OUT)/$$s; \
+	  rm -rf $$o && mkdir -p $$o; \
+	  ls $(OUT)/extra_$$s/frames | sed 's/^0*//' | awk '{print $$1; print $$1-1}' | sort -n | uniq | awk '$$1>0' > $$o/cap.txt; \
+	  $(M2BIN) +game=$$id +dswb=FD +sdram=build/regions/$$s/sdram.bin +frames=9001 +cap=$$o/cap.txt \
+	    +out=$$o +snd=$$o/snd.txt +wav=$$o/audio.raw > $$o/run.log & \
+	done; wait
+	$(PY) m2/compare.py $(M2OUT)/sadari $(OUT)/extra_sadari --quiet
+	$(PY) m2/compare.py $(M2OUT)/gundl94 $(OUT)/extra_gundl94 --quiet
+	-$(PY) m3/compare_snd.py $(M2OUT)/sadari/snd.txt $(OUT)/extra_sadari --frames 9000
+	-$(PY) m3/compare_snd.py $(M2OUT)/gundl94/snd.txt $(OUT)/extra_gundl94 --frames 9000
+	$(PY) m3/compare_audio.py $(M2OUT)/sadari/audio.raw $(OUT)/m3wav_sadari.wav
+	$(PY) m3/compare_audio.py $(M2OUT)/gundl94/audio.raw $(OUT)/m3wav_gundl94.wav
+
+m3-wav-primella:
+	@for s in sadari gundl94; do \
+	  DUMP_DIR=$(OUT)/m3wav_$$s TOTAL=9000 NO_SNAP=1 DUMP_FRAMES=9000 \
+	    $(RUN) $$s $(ORACLE) -wavwrite $(CURDIR)/$(OUT)/m3wav_$$s.wav -samplerate 48000 >/dev/null 2>&1; \
+	done
 
 # ---------------------------------------------------------------- M3
 M3OUT := build/m3/gate

@@ -18,6 +18,15 @@
 // is MAME's frame N+1 whenever the game writes the registers only during
 // vblank; writes during the active lines take effect from the next frame.
 //
+// Primella family (sadari, gundl94; spec 5.3, 11.6): MAME's visible area is
+// all 256 lines and vblank starts at line 256, so here every line 0-255 is
+// rendered and shown, the vblank IRQ fires at line 256 (with the 256-line
+// parity frame that is line 0 of the next frame; never at power-on), and
+// the registers latch at the start of the last line of the frame, when
+// line 0 is rendered. The displayed frame after vblank N therefore shows
+// the state MAME draws at vblank N. No sprites; the text layer goes below
+// fg0 when ctrl bit 3 is set (i_pri_swap).
+//
 // Per line L (rendered during line L-1 into one half of a double buffer):
 //   1. tilemap passes in the game's order (spec 11), each setting its
 //      priority bit where opaque and overwriting the pen; in parallel the
@@ -104,8 +113,18 @@ module dy_video #(
     end
   end
   wire line_start = ce_pix && hcnt == 9'd0;
-  wire vbl_start  = line_start && !vextra && vcnt == 8'd248;
-  wire latch_now  = line_start && !vextra && vcnt == 8'(LATCH_LINE);
+  wire last_line  = vfull == 9'(V_TOTAL - 1);
+  wire prm        = is_primella(i_game);
+  // primella vblank = line 256; with V_TOTAL 256 that is the wrap to line 0,
+  // which must not count at power-on (MAME's first vblank is one frame in)
+  logic wrapped;
+  always_ff @(posedge clk) begin
+    if (!rst_n) wrapped <= 1'b0;
+    else if (line_start && last_line) wrapped <= 1'b1;
+  end
+  wire vbl_prm    = (V_TOTAL > 256) ? vfull == 9'd256 : (vfull == 9'd0 && wrapped);
+  wire vbl_start  = line_start && (prm ? vbl_prm : (!vextra && vcnt == 8'd248));
+  wire latch_now  = line_start && (prm ? last_line : (!vextra && vcnt == 8'(LATCH_LINE)));
   assign o_vbl_irq = vbl_start;
 
   // ================================================================ registers
@@ -290,6 +309,7 @@ module dy_video #(
   logic [15:0] rcyc;
 
   // pass list (spec 11): source 0 bg0, 1 fg0, 2 fg1, 3 text; bit = priority bit
+  // (primella: no sprites, so the bits are unused; pri_l = text below fg0)
   logic [1:0] p_src [4];
   logic [1:0] p_bit [4];
   logic [2:0] p_n;
@@ -302,6 +322,8 @@ module dy_video #(
     end else if (i_game == G_BLUEHAWK) begin
       p_src = '{2'd0, 2'd1, 2'd2, 2'd3};
       p_n   = 3'd4;
+    end else if (prm && pri_l) begin
+      p_src = '{2'd0, 2'd3, 2'd1, 2'd3};
     end
   end
 
@@ -419,7 +441,12 @@ module dy_video #(
   wire [11:0]  r2_out  = (rs_occ && !blocked) ? {1'b1, rs_pen}
                         : r2_lv ? {1'b1, r2_lpen} : 12'd0;
 
-  wire line_ok = !vextra && (vcnt >= 8'd7) && (vcnt <= 8'd246);
+  // line rendered next: normal games 8-247 (during lines 7-246); primella
+  // 0-255 (line 0 during the last line of the frame)
+  wire       line_ok  = prm ? (last_line || (!vextra && vcnt != 8'd255))
+                            : (!vextra && (vcnt >= 8'd7) && (vcnt <= 8'd246));
+  wire [7:0] next_line = last_line ? 8'd0 : vcnt + 8'd1;
+  wire       no_spr   = prm || (sdis_l && i_game == G_LASTDAY);
   // render start one clock after the line start, so a latch on that line
   // start is visible to everything the renderer reads
   logic go;
@@ -444,13 +471,14 @@ module dy_video #(
       end
       case (rs)
         R_IDLE: if (go) begin
-          rline    <= vcnt + 8'd1;
+          rline    <= next_line;
           pi       <= 3'd0;
           rcyc     <= 16'd0;
           rs       <= R_PASS;
-          // lastday ctrl bit 4 suppresses the sprite pass (spec 10.1)
-          sp_start <= !(sdis_l && i_game == G_LASTDAY);
-          sp_fin   <= sdis_l && i_game == G_LASTDAY;
+          // lastday ctrl bit 4 suppresses the sprite pass (spec 10.1); the
+          // primella family has no sprites
+          sp_start <= !no_spr;
+          sp_fin   <= no_spr;
         end
         R_PASS: begin
           if (pi == p_n) begin
@@ -505,7 +533,11 @@ module dy_video #(
   logic [11:0] s1_raw, s2_px;
   wire  [11:0] s1_px = s1_de ? s1_raw : 12'd0;
   wire         h_act = (hcnt >= 9'd64) && (hcnt <= 9'd447);
-  wire         v_act = !vextra && (vcnt >= 8'd8) && (vcnt <= 8'd247);
+  wire         v_act = prm ? !vextra : (!vextra && (vcnt >= 8'd8) && (vcnt <= 8'd247));
+  // vsync: lines 250-252; primella lines 257-258 (only 256 + 4 blank lines
+  // on hardware; none in the 256-line parity frame)
+  wire         v_sync = prm ? (vextra && (vfull[2:0] == 3'd1 || vfull[2:0] == 3'd2))
+                            : (!vextra && vcnt >= 8'd250 && vcnt < 8'd253);
   wire [8:0]   ox    = 9'(hcnt - 9'd64);
 
   function automatic logic [23:0] to_rgb(logic [15:0] w, logic is444);
@@ -519,7 +551,7 @@ module dy_video #(
       s1_hb <= !h_act;
       s1_vb <= !v_act;
       s1_hs <= (hcnt >= 9'd464) && (hcnt < 9'd496);
-      s1_vs <= (vcnt >= 8'd250) && (vcnt < 8'd253);
+      s1_vs <= v_sync;
       s1_raw <= obuf[{vcnt[0], ox}];   // unconditional: lets the buffer be a RAM
       s2_de <= s1_de;
       s2_hb <= s1_hb;

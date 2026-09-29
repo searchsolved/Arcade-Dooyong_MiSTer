@@ -77,6 +77,7 @@ int main(int argc, char **argv) {
     std::string sd = plus("sdram", ""), out = plus("out", "."), capf = plus("cap", "");
     long nframes = atol(plus("frames", "600").c_str());
     int game = atoi(plus("game", "3").c_str());
+    const size_t frame_px = (game == 5 || game == 6) ? 384 * 256 : 384 * 240;   // primella family: 256 lines
     std::string sndf = plus("snd", ""), wavf = plus("wav", "");
     FILE *fsnd = sndf.empty() ? nullptr : fopen(sndf.c_str(), "w");
     FILE *fwav = wavf.empty() ? nullptr : fopen(wavf.c_str(), "wb");
@@ -190,7 +191,7 @@ int main(int argc, char **argv) {
             if (frame > 0 && cap.count(frame)) {
                 char fn[64];
                 snprintf(fn, sizeof fn, "%s/%06ld.rgbp", out.c_str(), frame);
-                if (px.size() != 384 * 240 * 5)
+                if (px.size() != frame_px * 5)
                     fprintf(stderr, "frame %ld: %zu pixels\n", frame, px.size() / 5);
                 dump(fn, px.data(), px.size());
                 snprintf(fn, sizeof fn, "%s/%06ld.wlog", out.c_str(), frame);

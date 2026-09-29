@@ -12,7 +12,9 @@ frame):
                    bluehawk layer disable, flytiger palette bank 0 with
                    content, sprite X 0x1F0-0x1FF and the left edge, negative
                    Y-shift positions, multi-tile heights, colour 0/15
-                   sprites, the other map format, scroll extremes, flip.
+                   sprites, the other map format, scroll extremes, flip;
+                   primella family (sadari, gundl94): flip, both text
+                   priorities, layer disable, format A, scroll extremes.
   <set>_random   : fully random registers, flags, palette, text and sprite
                    RAM (fixed seed), every Z80 game the RTL supports.
 
@@ -28,8 +30,11 @@ HERE = Path(__file__).resolve().parent
 OUT_MAME = HERE.parent / "mame" / "out"
 TAGS = {"bg0": "bg1", "fg0": "fg1", "fg1": "fg2"}
 LAYERS = {"lastday": ("bg0", "fg0"), "gulfstrm": ("bg0", "fg0"), "pollux": ("bg0", "fg0"),
-          "flytiger": ("bg0", "fg0"), "bluehawk": ("bg0", "fg0", "fg1")}
-PAL_BYTES = {"lastday": 2048, "gulfstrm": 2048, "pollux": 4096, "flytiger": 4096, "bluehawk": 2048}
+          "flytiger": ("bg0", "fg0"), "bluehawk": ("bg0", "fg0", "fg1"),
+          "sadari": ("bg0", "fg0"), "gundl94": ("bg0", "fg0")}
+PAL_BYTES = {"lastday": 2048, "gulfstrm": 2048, "pollux": 4096, "flytiger": 4096, "bluehawk": 2048,
+             "sadari": 2048, "gundl94": 2048}
+PRIMELLA = ("sadari", "gundl94")
 SEED = 20260928
 N_RANDOM = 60
 
@@ -39,7 +44,8 @@ class Scene:
         self.st = json.loads((src / "state.json").read_text())
         self.pal = bytearray((src / "palette.bin").read_bytes())
         self.txt = bytearray((src / "text.bin").read_bytes())
-        self.spr = bytearray((src / "spriteram_buf.bin").read_bytes())
+        sp = src / "spriteram_buf.bin"          # none on the primella family
+        self.spr = bytearray(sp.read_bytes()) if sp.exists() else None
 
     def regs(self, layer):
         return self.st[f"{TAGS[layer]}.m_registers"]
@@ -55,7 +61,8 @@ class Scene:
         (d / "state.json").write_text(json.dumps(self.st))
         (d / "palette.bin").write_bytes(bytes(self.pal))
         (d / "text.bin").write_bytes(bytes(self.txt))
-        (d / "spriteram_buf.bin").write_bytes(bytes(self.spr))
+        if self.spr is not None:
+            (d / "spriteram_buf.bin").write_bytes(bytes(self.spr))
 
 
 def src_frame(run, n):
@@ -63,7 +70,7 @@ def src_frame(run, n):
 
 
 def targeted(out):
-    scenes = {"flytiger": [], "bluehawk": []}
+    scenes = {"flytiger": [], "bluehawk": [], "sadari": [], "gundl94": []}
 
     # flytiger demo play frames (2000-2599 consecutive capture)
     for n in (2000, 2200, 2400):
@@ -147,6 +154,37 @@ def targeted(out):
                     a0, a1, a3 = (a0 * 7 + 13) & 0xFF, (a1 * 5 + 3) & 0xFF, (a3 * 3 + 1) & 0xFF
                 scenes[set_].append((f"scroll_{r0:02x}{r1:02x}{r3:02x}_f{flip}", s))
 
+    # primella family: flip, text priority both ways, layer disable, format
+    # A, scroll extremes (the attract captures never flip or disable)
+    for set_, nums in (("sadari", (1500, 4500, 7500)), ("gundl94", (1500, 4500, 7500))):
+        for n in nums:
+            base = src_frame(f"extra_{set_}", n)
+            for flip in (0, 1):
+                for pri in (0, 1):
+                    s = Scene(base)
+                    s.st["m_flip_screen_x"] = [flip]
+                    s.st["m_tx_pri"] = [pri]
+                    scenes[set_].append((f"f{flip}_txpri{pri}_{n}", s))
+            for dis in (("bg0",), ("fg0",), ("bg0", "fg0")):
+                s = Scene(base)
+                for layer in dis:
+                    s.regs(layer)[6] |= 0x10
+                scenes[set_].append((f"off_{'_'.join(dis)}_{n}", s))
+            s = Scene(base)
+            s.regs("fg0")[6] |= 0x20
+            scenes[set_].append((f"fmtA_fg0_{n}", s))
+        for r0, r1, r3 in ((0xFF, 0xFF, 0xFF), (0x00, 0xFF, 0x80), (0x1F, 0xFE, 0x01)):
+            for flip in (0, 1):
+                s = Scene(src_frame(f"extra_{set_}", nums[1]))
+                s.st["m_flip_screen_x"] = [flip]
+                s.st["m_tx_pri"] = [flip]
+                a0, a1, a3 = r0, r1, r3
+                for layer in LAYERS[set_]:
+                    rg = s.regs(layer)
+                    rg[0], rg[1], rg[3] = a0, a1, a3
+                    a0, a1, a3 = (a0 * 7 + 13) & 0xFF, (a1 * 5 + 3) & 0xFF, (a3 * 3 + 1) & 0xFF
+                scenes[set_].append((f"scroll_{r0:02x}{r1:02x}{r3:02x}_f{flip}", s))
+
     for set_, lst in scenes.items():
         run = out / f"{set_}_targeted" / "frames"
         for i, (name, s) in enumerate(lst):
@@ -158,10 +196,12 @@ def targeted(out):
 
 def randoms(out):
     rng = random.Random(SEED)
-    for set_ in ("lastday", "gulfstrm", "pollux", "flytiger", "bluehawk"):
+    for set_ in ("lastday", "gulfstrm", "pollux", "flytiger", "bluehawk") + PRIMELLA:
         run = out / f"{set_}_random" / "frames"
+        prm = set_ in PRIMELLA
         for i in range(N_RANDOM):
-            st = {"set": set_, "machine": set_, "frame": i + 1, "width": 384, "height": 240}
+            st = {"set": set_, "machine": "primella" if prm else set_, "frame": i + 1,
+                  "width": 384, "height": 256 if prm else 240}
             bank = rng.random() < 0.5 if set_ in ("pollux", "flytiger") else False
             for layer in LAYERS[set_]:
                 r = [rng.randrange(256) for _ in range(8)] + [0] * 8
@@ -173,6 +213,8 @@ def randoms(out):
             st["m_flytiger_pri"] = [rng.randrange(2) if set_ == "flytiger" else 0]
             st["m_flip_screen_x"] = [rng.randrange(2)]
             st["m_sprites_disabled"] = [int(rng.random() < 0.2) if set_ == "lastday" else 0]
+            if prm:
+                st["m_tx_pri"] = [rng.randrange(2)]
             d = run / f"{i + 1:06d}"
             d.mkdir(parents=True, exist_ok=True)
             (d / "state.json").write_text(json.dumps(st))
@@ -180,7 +222,8 @@ def randoms(out):
             # text: mostly transparent-ish random chars so layers below show
             (d / "text.bin").write_bytes(bytes(rng.randrange(256) for _ in range(4096)))
             spr = bytearray(rng.randrange(256) for _ in range(4096))
-            (d / "spriteram_buf.bin").write_bytes(bytes(spr))
+            if not prm:
+                (d / "spriteram_buf.bin").write_bytes(bytes(spr))
         print(f"{set_}_random: {N_RANDOM} scenes")
 
 
