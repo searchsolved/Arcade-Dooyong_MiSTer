@@ -128,6 +128,9 @@ module dy_layer_pass (
   logic        tag_flip [4];
   logic [15:0] tattr;                 // text entry of the current char (split: for the 2nd request)
   logic [3:0]  inq;                   // groups requested and not yet consumed
+  logic        g_rdy;                 // registered tile-group request valid
+  logic [22:0] g_addr;
+  logic [12:0] g_rec;
 
   // map index (spec 7.1): col * rows + row + reg1 * (256 / tile width) * rows
   //   32x32: 32 columns x 8 rows, reg1 * 64; 16x16: 64 columns x 32 rows, reg1 * 512
@@ -194,9 +197,11 @@ module dy_layer_pass (
         if_push_d  = {2'd2, 4'd0, col_addr[1:0], mk};
       end
       I_GRP: begin
-        o_rom_req  = mapv[gk] && (!crom || mapcv[gk]) && room;
-        o_rom_addr = tile_addr;
-        if_push_d  = {2'd1, a_col, 1'b0, a_fx, 5'd0};
+        // registered request (m4 STA compile 9: map-cache select -> tile
+        // address -> arbiter -> SDRAM in one clock failed by 2.4 ns)
+        o_rom_req  = g_rdy && room;
+        o_rom_addr = g_addr;
+        if_push_d  = g_rec;
       end
       I_TXTW: begin
         o_rom_req  = room;
@@ -270,7 +275,14 @@ module dy_layer_pass (
       mapv  <= '0;
       mapcv <= '0;
       tag_v <= '0;
+      g_rdy <= 1'b0;
     end else begin
+      // tile group request: address and record registered one clock ahead
+      if (is == I_GRP && !g_rdy && mapv[gk] && (!crom || mapcv[gk])) begin
+        g_rdy  <= 1'b1;
+        g_addr <= tile_addr;
+        g_rec  <= {2'd1, a_col, 1'b0, a_fx, 5'd0};
+      end
       case (is)
         I_MAP: if (acc) begin
           if (crom) is <= I_COL;
@@ -284,6 +296,7 @@ module dy_layer_pass (
           is <= (mk == ncol - 5'd1) ? I_GRP : I_MAP;
         end
         I_GRP, I_TXB: if (acc) begin
+          g_rdy <= 1'b0;
           ftx  <= ftx_next;
           frem <= frem_n;
           if (!text && col_step) gk <= gk + 5'd1;
@@ -356,6 +369,7 @@ module dy_layer_pass (
         mk        <= 5'd0;
         gk        <= 5'd0;
         lay       <= i_layer;
+        g_rdy     <= 1'b0;
         if (i_text) begin
           mapv  <= '0;
           mapcv <= '0;

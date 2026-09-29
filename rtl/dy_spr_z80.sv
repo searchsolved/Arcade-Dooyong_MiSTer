@@ -182,15 +182,18 @@ module dy_spr_z80 (
   wire           ft_vis  = (ft_sx <= 11'sd447) && (ft_sx >= 11'sd49);
   wire           ft_last = (f_t == fh_cnt);
   wire           f_have  = (hq_cnt != 3'd0);
-  wire           f_skip  = f_have && !f_half && !ft_vis;
-  wire           f_req = f_have && ft_vis && (f_half || rq_cnt < 3'(RD));
+  // the current tile's fetch decision, address and record are registered
+  // one clock ahead (m4 STA compile 9: queue head -> address -> SDRAM)
+  logic          fv, fv_vis, fv_last;
+  logic [22:0]   fv_addr;
+  logic [HW-1:0] fh_rec;                 // record pushed with the first word: this tile's X and code
+  wire           f_skip  = fv && !f_half && !fv_vis;
+  wire           f_req   = fv && fv_vis && (f_half || rq_cnt < 3'(RD));
   assign o_rom_req  = f_req;
-  assign o_rom_addr = SPR_BASE + {2'b0, ft_tile, 7'b0} + {16'b0, f_half, 6'b0} + {17'b0, fh[3:0], 2'b0};
+  assign o_rom_addr = fv_addr | {16'b0, f_half, 6'b0};    // tile*128 + row*4 is 64-byte aligned for the half
   wire           f_acc = f_req && i_rom_gnt;
   wire           f_tile_done = (f_acc && f_half) || f_skip;
-  assign hq_pop = f_tile_done && ft_last;
-  // record pushed with the first word: this tile's X and code
-  wire [HW-1:0]  fh_rec = {fh[38:35], ft_sx, fh[23:18], ft_tile, fh[3:0]};
+  assign hq_pop = f_tile_done && fv_last;
 
   // ---------------------------------------------------------------- draw
   // The head record is latched into registers when its draw starts (the
@@ -260,6 +263,7 @@ module dy_spr_z80 (
       rq_ready <= '0;
       f_half   <= 1'b0;
       f_t      <= 4'd0;
+      fv       <= 1'b0;
       drawing  <= 1'b0;
       sa_act   <= 1'b0;
       o_done   <= 1'b0;
@@ -305,7 +309,15 @@ module dy_spr_z80 (
           rq_wp <= rq_wp + 2'd1;
         end
       end
-      if (f_tile_done) f_t <= ft_last ? 4'd0 : f_t + 4'd1;
+      if (f_tile_done) f_t <= fv_last ? 4'd0 : f_t + 4'd1;
+      if (f_tile_done) fv <= 1'b0;
+      else if (!fv && f_have) begin
+        fv      <= 1'b1;
+        fv_vis  <= ft_vis;
+        fv_last <= ft_last;
+        fv_addr <= SPR_BASE + {2'b0, ft_tile, 7'b0} + {17'b0, fh[3:0], 2'b0};
+        fh_rec  <= {fh[38:35], ft_sx, fh[23:18], ft_tile, fh[3:0]};
+      end
       if (i_rom_rv) begin
         if (!rs_half) rq_g0[rs_wp] <= i_rom_data;
         else begin
