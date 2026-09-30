@@ -24,7 +24,8 @@ Date: 2026-09-29/30. Game IDs 7 (superx, superxm), 8 (rshark, rsharka),
 | M1 targeted + random scenes | 32 + 60 | 32 + 60 | 26 + 60 |
 | Worst render line (pessimistic ROM model) | 4,451 clocks | 6,754 (absorbed by the run-ahead, 0 overruns) | 2,023 |
 | M2 boot from power-on vs MAME | exact to frame ~690 | exact to frame ~540 (small transient differences), streams identical to frame 1,481 | see section 4 |
-| Sound level vs MAME WAV | within 1 dB | within 1 dB | rerun pending (section 4) |
+| Sound level vs MAME WAV | within 1 dB | within 1 dB | within 1 dB (MAME DIP defaults; YM2151 stream identical to frame ~4,300, M6295 to ~3,070) |
+| Board sim (MRA stream, SDRAM model), superx 300 frames | 10/10 exact, 20/20 RAM, worst line 4,202 clocks | - | - |
 
 All Z80-game suites re-run after these changes: M1 unchanged, flytiger and
 bluehawk M2 boots 0 unexplained frames and 0 persistent RAM differences.
@@ -53,5 +54,26 @@ popbingo early, see below), the same class as R15 on the Z80 games. The
 core keeps fx68k's behaviour (hardware accuracy over MAME parity).
 
 popbingo's first gate run used DSWA 0xFF while MAME's default is 0xFB
-(demo sounds switch inverted, i.e. demo sounds on in MAME): its audio and
-early divergence are being re-checked with the MAME defaults.
+(demo sounds switch inverted, demo sounds on in MAME). Re-run with 0xFB:
+level within 1 dB and the sound streams identical for thousands of frames;
+its early small sprite-position differences (from frame 60) are the same
+IRQ-acknowledge timing (the IRQ6 handler's first write lands a few pixels
+either side of MAME's, frame to frame).
+
+## 5. Timing closure (Quartus 17.0)
+
+| Compile | Setup slack (96 MHz) | Failing structure | Fix |
+|---|---|---|---|
+| 8 | -4.054 ns | sprite buffer RAM -> 68000 hit test (sign extension, flip, compare, multiply) -> hit queue | two pipeline stages after the entry's last word |
+| 9 | -2.369 | map-row cache select -> tile address -> arbiter -> SDRAM; sprite queue head -> fetch address -> SDRAM | registered request address in the layer pass and the sprite fetch |
+| 10 | -0.939 | map-row cache select -> tile address (still one clock); sprite owner check + 192-entry line-buffer write | cache read and address in separate clocks; pen write moved to a stage C |
+| 11 | +1.082 (video +3.110, hold +0.245) | - | - |
+
+Fit (compile 11): 22,606 ALMs (54%), 497 of 553 RAM blocks (90%).
+All M1 suites re-run after every change: unchanged.
+
+## 6. Hardware
+
+Dooyong_20260930.rbf (md5 29d749eb) deployed 2026-09-30 01:5x with the 5
+new MRAs and superx/rshark/popbingo zips (previous cores kept on the
+MiSTer); Super-X loads (CORENAME superx). Not yet played.

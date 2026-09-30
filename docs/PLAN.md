@@ -18,6 +18,13 @@ Decision 2026-09-29 (Lee): all hardware QA (Blue Hawk on hardware, DIPs,
 long play, R13 by ear) is deferred until every game is in the core, then
 done once as M5. Flying Tiger passed its first hardware test on 09-29.
 
+Status 2026-09-30: all ten parents (25 sets) in the core and on the MiSTer
+(Dooyong_20260930.rbf): Z80 family (docs/primella_findings.md,
+docs/ym2203_findings.md) and the 68000 family on fx68k
+(docs/m68k_findings.md). Open research: R12 (register latching), R13/R15/
+R16 (interrupt and timer timing against MAME), R14 (primella display).
+Next: M5 hardware QA of every game.
+
 Status 2026-09-29: primella family (sadari, gundl94, primella) through M1,
 M2, M3 and the board sim (`docs/primella_findings.md`); not yet built or
 run on hardware.
