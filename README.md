@@ -27,9 +27,9 @@ Every game's video is pixel-exact against MAME in simulation. Played on
 hardware so far: Flying Tiger, Sadari, Super-X and R-Shark.
 
 The CPUs and sound chips use established cores: T80 (Daniel Wallner),
-fx68k (Jorge Cwik), and jt51, jt6295 and jt03 (Jose Tejada). The video
-hardware (ROM tilemaps, sprites, text layer) is new work, one renderer
-covering all ten games.
+fx68k (Jorge Cwik), and jt51, jt6295, jt03 and jt49 (Jose Tejada,
+jotego; see CREDITS.md). The video hardware (ROM tilemaps, sprites,
+text layer) is new work, one renderer covering all ten games.
 
 ## Install
 
@@ -125,5 +125,3 @@ tools/              ROM image builder, MRA generator (proves each MRA
 GPL-3.0-or-later for the combined work. Vendored components keep their
 own licences and headers. See `LICENSE` and `CREDITS.md`. The core
 relies on MAME's Dooyong driver by Nicola Salmoria, Vas Crabb and contributors.
-
-Development used Anthropic's Claude as a coding tool.
