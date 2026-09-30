@@ -211,7 +211,10 @@ module dy_spr_z80 (
   logic        sa_v  [2];                 // stage A -> B
   logic [8:0]  sa_bx [2];
   logic [11:0] sa_pen [2];
-  logic        sa_act;
+  logic        sa_act, sb_act, c_act;
+  logic        sc_v  [2];                 // stage B -> C
+  logic [8:0]  sc_bx [2];
+  logic [11:0] sc_pen [2];
 
   function automatic logic [3:0] spix(logic [31:0] a, logic [31:0] b, logic [3:0] t);
     logic [31:0] w;
@@ -266,6 +269,9 @@ module dy_spr_z80 (
       fv       <= 1'b0;
       drawing  <= 1'b0;
       sa_act   <= 1'b0;
+      sb_act   <= 1'b0;
+      c_act    <= 1'b0;
+      for (int j = 0; j < 2; j++) sc_v[j] <= 1'b0;
       o_done   <= 1'b0;
       occ      <= '0;
     end else begin
@@ -349,14 +355,21 @@ module dy_spr_z80 (
         di <= di + 4'd2;
         if (di == 4'd14) drawing <= 1'b0;
       end
-      // stage B
+      // stage B: owner check (first drawn wins) and owner bit; stage C
+      // writes the pen a clock later (m4 STA compile 10: check + write of
+      // the 192-entry buffers in one clock)
+      c_act <= sb_act;
       for (int j = 0; j < 2; j++) begin
-        if (sa_v[j] && !occ[sa_bx[j]]) begin
-          occ[sa_bx[j]] <= 1'b1;
-          if (sa_bx[j][0]) lbo[sa_bx[j][8:1]] <= sa_pen[j];
-          else             lbe[sa_bx[j][8:1]] <= sa_pen[j];
+        sc_v[j] <= sa_v[j] && !occ[sa_bx[j]];
+        sc_bx[j] <= sa_bx[j];
+        sc_pen[j] <= sa_pen[j];
+        if (sa_v[j] && !occ[sa_bx[j]]) occ[sa_bx[j]] <= 1'b1;
+        if (sc_v[j]) begin
+          if (sc_bx[j][0]) lbo[sc_bx[j][8:1]] <= sc_pen[j];
+          else             lbe[sc_bx[j][8:1]] <= sc_pen[j];
         end
       end
+      sb_act <= sa_act;
       rq_cnt   <= rq_cnt + 3'(f_acc && !f_half) - 3'(!drawing && rq_ready != 3'd0);
       rq_ready <= rq_ready + 3'(i_rom_rv && rs_half) - 3'(!drawing && rq_ready != 3'd0);
 
@@ -368,7 +381,7 @@ module dy_spr_z80 (
         scan <= 1'b1;
         sc   <= 10'd0;
       end
-      if (!i_start && !scan && !d_v && !e1_v && !e2_v && hq_cnt == 3'd0 && rq_cnt == 3'd0 && !drawing && !sa_act
+      if (!i_start && !scan && !d_v && !e1_v && !e2_v && hq_cnt == 3'd0 && rq_cnt == 3'd0 && !drawing && !sa_act && !sb_act && !c_act
           && busy && !o_done)
         o_done <= 1'b1;
 

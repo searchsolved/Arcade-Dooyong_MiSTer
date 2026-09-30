@@ -129,6 +129,9 @@ module dy_layer_pass (
   logic [15:0] tattr;                 // text entry of the current char (split: for the 2nd request)
   logic [3:0]  inq;                   // groups requested and not yet consumed
   logic        g_rdy;                 // registered tile-group request valid
+  logic        g_s1;                  // map word of column gk registered (stage 1)
+  logic [15:0] g_attr;
+  logic [3:0]  g_crom;
   logic [22:0] g_addr;
   logic [12:0] g_rec;
 
@@ -144,9 +147,9 @@ module dy_layer_pass (
 
   // current group, tile mode. Format B code: attr & 0x1FFF / 0x7FF / 0x3FF
   // by game (spec 7.3); the tile mask equals that width minus unused tiles
-  wire [15:0] attr   = mapw[lay][gk];
+  wire [15:0] attr   = g_attr;          // registered map word of column gk
   wire [12:0] a_code = (fmt_a ? {3'b000, attr[15], attr[8:0]} : attr[12:0]) & tile_mask;
-  wire [3:0]  a_col  = crom ? mapc[lay][gk] : col0 ? 4'd0 : fmt_a ? attr[14:11] : attr[13:10];
+  wire [3:0]  a_col  = crom ? g_crom : col0 ? 4'd0 : fmt_a ? attr[14:11] : attr[13:10];
   wire        a_fx   = fmt_a ? attr[9]  : attr[14];
   wire        a_fy   = fmt_a ? attr[10] : attr[15];
   wire [1:0]  grp    = t16 ? {1'b0, ftx[3]} : ftx[4:3];
@@ -276,9 +279,18 @@ module dy_layer_pass (
       mapcv <= '0;
       tag_v <= '0;
       g_rdy <= 1'b0;
+      g_s1  <= 1'b0;
     end else begin
       // tile group request: address and record registered one clock ahead
-      if (is == I_GRP && !g_rdy && mapv[gk] && (!crom || mapcv[gk])) begin
+      // stage 1 reads the map-row cache, stage 2 forms the address (m4 STA
+      // compile 10: cache select + address in one clock failed by 0.9 ns)
+      if (is == I_GRP && !g_rdy && !g_s1 && mapv[gk] && (!crom || mapcv[gk])) begin
+        g_s1   <= 1'b1;
+        g_attr <= mapw[lay][gk];
+        g_crom <= mapc[lay][gk];
+      end
+      if (g_s1) begin
+        g_s1   <= 1'b0;
         g_rdy  <= 1'b1;
         g_addr <= tile_addr;
         g_rec  <= {2'd1, a_col, 1'b0, a_fx, 5'd0};
@@ -370,6 +382,7 @@ module dy_layer_pass (
         gk        <= 5'd0;
         lay       <= i_layer;
         g_rdy     <= 1'b0;
+        g_s1      <= 1'b0;
         if (i_text) begin
           mapv  <= '0;
           mapcv <= '0;
