@@ -16,9 +16,8 @@ The Dooyong arcade hardware family (1990-1996) for MiSTer: ten games and
 | R-Shark (+ set 2) | 1995 | 68000 | YM2151 + M6295 | vertical |
 | Pop Bingo | 1996 | 68000 | YM2151 + M6295 | horizontal |
 
-Status: beta. Every game's video is pixel-exact against MAME in
-simulation; Flying Tiger, Sadari, Super-X and R-Shark have been played
-on hardware so far.
+Every game's video is pixel-exact against MAME in simulation. Played on
+hardware so far: Flying Tiger, Sadari, Super-X and R-Shark.
 
 The CPUs and sound chips use established cores: T80 (Daniel Wallner),
 fx68k (Jorge Cwik), and jt51, jt6295 and jt03 (Jose Tejada). The video

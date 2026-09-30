@@ -11,7 +11,7 @@ Alternative versions live in `_alternatives/_<game>/` and are copied to
 
 | File | md5 | Notes |
 |------|-----|-------|
-| `Arcade-Dooyong_20260930.rbf` | `29d749eb7c4166184e12fde7f8eeccdf` | First release (beta): all ten games, 25 sets. |
+| `Arcade-Dooyong_20260930.rbf` | `29d749eb7c4166184e12fde7f8eeccdf` | First release: all ten games, 25 sets. |
 
 Every released RBF passed, in order: frame replay against MAME for
 every game (video pixel-exact), full-system boots against MAME from
