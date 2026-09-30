@@ -21,11 +21,12 @@ component's `PROVENANCE.md`.
 
 | Component | Author | License | Upstream |
 |---|---|---|---|
-| T80 (Z80, main and sound CPU) | Daniel Wallner; MiSTer maintenance by Sorgelig | BSD-style (see file headers) | via https://github.com/jotego/jtcores |
+| T80 (Z80, main and sound CPU) | Daniel Wallner; MiSTer maintenance by Sorgelig; taken from Jose Tejada's jtframe, whose GHDL translation `T80s.v` is the Verilog used in simulation | BSD-style (see file headers) | https://github.com/jotego/jtcores (modules/jtframe) |
 | fx68k (68000, cycle-accurate) | Jorge Cwik | GPL-3.0 | https://github.com/ijor/fx68k |
 | jt51 (Yamaha YM2151) | Jose Tejada (@topapate / jotego) | GPL-3.0-or-later | https://github.com/jotego/jt51 |
 | jt6295 (OKI MSM6295) | Jose Tejada (@topapate / jotego) | GPL-3.0-or-later | https://github.com/jotego/jt6295 |
-| jt03 / jt49 (Yamaha YM2203 and its SSG) | Jose Tejada (@topapate / jotego) | GPL-3.0-or-later | https://github.com/jotego/jt12 |
+| jt03 (Yamaha YM2203, part of jt12) | Jose Tejada (@topapate / jotego) | GPL-3.0-or-later | https://github.com/jotego/jt12 |
+| jt49 (the YM2203's SSG, AY-3-8910 compatible) | Jose Tejada (@topapate / jotego) | GPL-3.0-or-later | https://github.com/jotego/jt49 |
 
 Local changes: T80 loads IX = IY = 0xFFFF at reset (MAME's Z80
 power-on state; `rtl/vendor/t80/PROVENANCE.md`); fx68k carries the
@@ -33,8 +34,9 @@ Verilator portability patches from the Hyper Duel core
 (`rtl/vendor/fx68k/PROVENANCE.md`); jt51 has a simulation-only timer
 option (`rtl/vendor/SOUND_PROVENANCE.md`). jt03 and jt6295 are unmodified.
 
-If you enjoy this core, consider supporting Jose Tejada's FPGA work:
-https://www.patreon.com/jotego
+Four of the core's sound and CPU blocks come from Jose Tejada's work (jt51,
+jt6295, jt03/jt49, and the jtframe packaging of T80). If you enjoy this
+core, consider supporting him: https://www.patreon.com/jotego
 
 ## MiSTer framework (`sys/`)
 
