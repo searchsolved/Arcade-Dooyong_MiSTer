@@ -37,8 +37,8 @@ GAME_ID = {"lastday": 0, "gulfstrm": 1, "pollux": 2, "flytiger": 3, "bluehawk": 
 PRIMELLA_ID = {"sadari": 5, "gundl94": 6}
 SUPPORTED = ("lastday", "gulfstrm", "pollux", "flytiger", "bluehawk", "primella",
              "superx", "rshark", "popbingo")      # machines the RBF runs so far
-RBF = "Dooyong"
-OUTDIR = ROOT / "releases" / "mra"
+RBF = "dooyong"                           # matches releases/Arcade-Dooyong_YYYYMMDD.rbf
+OUTDIR = ROOT / "releases"                # parents here, clones in _alternatives/_<game>/
 
 
 # ------------------------------------------------------------------ sources
@@ -329,8 +329,13 @@ def make(setname, sets):
     root.append(rom)
     ET.indent(root, "    ")
     safe = re.sub(r'[\\/:*?"<>|]', "-", title)
-    path = OUTDIR / f"{safe}.mra"
-    OUTDIR.mkdir(parents=True, exist_ok=True)
+    if rs.parent:     # MiSTer-devel layout: clones under _alternatives/_<parent game name>/
+        ptitle = re.sub(r"\s*\([^)]*\)\s*$", "", title_of(rs.parent)[2])
+        outdir = OUTDIR / "_alternatives" / ("_" + re.sub(r'[\\/:*?"<>|]', "-", ptitle))
+    else:
+        outdir = OUTDIR
+    path = outdir / f"{safe}.mra"
+    outdir.mkdir(parents=True, exist_ok=True)
     path.write_text(ET.tostring(root, encoding="unicode") + "\n")
     return path, len(src)
 

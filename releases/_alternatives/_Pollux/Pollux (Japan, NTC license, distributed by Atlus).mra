@@ -1,0 +1,56 @@
+<misterromdescription>
+    <name>Pollux (Japan, NTC license, distributed by Atlus)</name>
+    <setname>polluxn</setname>
+    <rbf>dooyong</rbf>
+    <mameversion>0289</mameversion>
+    <year>1991</year>
+    <manufacturer>Dooyong (NTC / Atlus license)</manufacturer>
+    <players>2</players>
+    <joystick>8-way</joystick>
+    <rotation>vertical (ccw)</rotation>
+    <switches default="FF,FF">
+        <dip name="Service Mode" bits="0" ids="On,Off" />
+        <dip name="Coin Type" bits="1" ids="B,A" />
+        <dip name="Demo Sounds" bits="2" ids="Off,On" />
+        <dip name="Flip Screen" bits="3" ids="On,Off" />
+        <dip name="Coin A" bits="4,5" ids="2C/3C,2C/1C,1C/2C,1C/1C" />
+        <dip name="Coin B" bits="6,7" ids="2C/3C,2C/1C,1C/2C,1C/1C" />
+        <dip name="Lives" bits="8,9" ids="1,4,2,3" />
+        <dip name="Difficulty" bits="10,11" ids="Hardest,Hard,Easy,Normal" />
+        <dip name="Allow Continue" bits="15" ids="No,Yes" />
+    </switches>
+    <buttons names="Button 1,Button 2,Start,Coin,Service" default="A,B,Start,Select,L" />
+    <rom index="1">
+        <part>02</part>
+    </rom>
+    <rom index="0" zip="polluxn.zip|pollux.zip" md5="none">
+        <part name="polluxntc_2.3g" crc="96d3e3af" offset="0x0" length="0x10000" />
+        <part repeat="0x30000">00</part>
+        <part name="polluxntc_3.6t" crc="85a9dc98" offset="0x0" length="0x10000" />
+        <part name="polluxntc_1.3r" crc="7f7135da" offset="0x8000" length="0x8000" />
+        <part name="polluxntc_1.3r" crc="7f7135da" offset="0x0" length="0x8000" />
+        <part repeat="0x60000">00</part>
+        <interleave output="16">
+            <part name="polluxntc_9.8b" crc="378d8914" offset="0x0" length="0x10000" map="01" />
+            <part name="polluxntc_8.8j" crc="8859fa70" offset="0x0" length="0x10000" map="10" />
+        </interleave>
+        <interleave output="16">
+            <part name="polluxntc_5.8p" crc="ac090d34" offset="0x0" length="0x10000" map="01" />
+            <part name="polluxntc_4.8r" crc="0195dc4e" offset="0x0" length="0x10000" map="10" />
+        </interleave>
+        <part repeat="0x40000">00</part>
+        <interleave output="16">
+            <part name="polluxntc_dy-pl-m2_be023.3t" crc="bdea6f7d" offset="0x0" length="0x80000" map="12" />
+        </interleave>
+        <part repeat="0x180000">00</part>
+        <interleave output="16">
+            <part name="polluxntc_dy-pl-m1_be002.8a" crc="1d2dedd2" offset="0x0" length="0x80000" map="12" />
+        </interleave>
+        <part repeat="0x180000">00</part>
+        <interleave output="16">
+            <part name="polluxntc_6.8m" crc="b0391db5" offset="0x0" length="0x20000" map="01" />
+            <part name="polluxntc_7.8l" crc="632f6e10" offset="0x0" length="0x20000" map="10" />
+        </interleave>
+        <part repeat="0x40000">FF</part>
+    </rom>
+</misterromdescription>

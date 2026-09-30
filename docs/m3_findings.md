@@ -71,7 +71,7 @@ timers.
 | File | Content |
 |---|---|
 | `rtl/dy_snd.sv` | sound Z80 at 4 MHz, 64 KB ROM (BRAM, download port), 2 KB RAM, latch, jt51 at 3.579545 MHz (fractional enable, cen_p1 every other enable), jt6295 at 1 MHz pin 7 high, IRQ from the YM2151, mono mix with clamp |
-| `rtl/vendor/jt51`, `rtl/vendor/jt6295` | from Hyper Duel (proven on hardware), see `SOUND_PROVENANCE.md` |
+| `rtl/vendor/jt51`, `rtl/vendor/jt6295` | from Hyper Duel (proven on hardware), see `rtl/vendor/SOUND_PROVENANCE.md` |
 | `sim/m2/tb_sys.cpp` | now downloads the sound ROM, models the M6295 ROM port with latency, logs sound writes (`+snd`), OKI status reads and channel state, writes the mix at 48 kHz (`+wav`), and can trace sound-CPU opcode fetches with cycle counts (`+cputrace`) |
 | `sim/m3/compare_snd.py` | register-stream comparison with MAME's write log |
 | `sim/m3/compare_audio.py` | level and envelope comparison with MAME's WAV |
