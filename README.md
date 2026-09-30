@@ -3,6 +3,13 @@
 The Dooyong arcade hardware family (1990-1996) for MiSTer: ten games and
 25 MAME sets from one RBF.
 
+<img src="docs/images/lastday.png" width="13.5%" alt="The Last Day"> <img src="docs/images/gulfstrm.png" width="13.5%" alt="Gulf Storm"> <img src="docs/images/pollux.png" width="13.5%" alt="Pollux"> <img src="docs/images/flytiger.png" width="13.5%" alt="Flying Tiger"> <img src="docs/images/bluehawk.png" width="13.5%" alt="Blue Hawk"> <img src="docs/images/superx.png" width="13.5%" alt="Super-X"> <img src="docs/images/rshark.png" width="13.5%" alt="R-Shark">
+
+<img src="docs/images/sadari.png" width="32.5%" alt="Sadari"> <img src="docs/images/gundl94.png" width="32.5%" alt="Gun Dealer '94"> <img src="docs/images/popbingo.png" width="32.5%" alt="Pop Bingo">
+
+*Frames rendered by this core (Verilator simulation of the RTL, which is
+pixel-exact against MAME and identical to what the MiSTer displays).*
+
 | Game | Year | Main CPU | Sound | Screen |
 |---|---|---|---|---|
 | The Last Day (+ set 2, Chulgyeok D-Day) | 1990 | Z80 | 2x YM2203 | vertical |
