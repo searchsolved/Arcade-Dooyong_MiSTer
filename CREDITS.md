@@ -32,7 +32,9 @@ Local changes: T80 loads IX = IY = 0xFFFF at reset (MAME's Z80
 power-on state; `rtl/vendor/t80/PROVENANCE.md`); fx68k carries the
 Verilator portability patches from the Hyper Duel core
 (`rtl/vendor/fx68k/PROVENANCE.md`); jt51 has a simulation-only timer
-option (`rtl/vendor/SOUND_PROVENANCE.md`). jt03 and jt6295 are unmodified.
+option, and jt6295 carries Hyper Duel's Quartus RAM-inference workaround
+plus simulation-only Verilator annotations, neither changing behaviour
+(`rtl/vendor/SOUND_PROVENANCE.md`). jt03 and jt49 are unmodified.
 
 Four of the core's sound and CPU blocks come from Jose Tejada's work (jt51,
 jt6295, jt03/jt49, and the jtframe packaging of T80). If you enjoy this
