@@ -17,5 +17,4 @@ Every released RBF passed, in order: frame replay against MAME for
 every game (video pixel-exact), full-system boots against MAME from
 power-on, a board-level simulation through the MRA stream and the SDRAM
 model, a clean Quartus timing summary (every clock non-negative), and an
-md5-verified deploy. Games played on hardware so far: Flying Tiger,
-Sadari, Super-X, R-Shark.
+md5-verified deploy.

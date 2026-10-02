@@ -23,8 +23,7 @@ pixel-exact against MAME and identical to what the MiSTer displays).*
 | R-Shark (+ set 2) | 1995 | 68000 | YM2151 + M6295 | vertical |
 | Pop Bingo | 1996 | 68000 | YM2151 + M6295 | horizontal |
 
-Every game's video is pixel-exact against MAME in simulation. Played on
-hardware so far: Flying Tiger, Sadari, Super-X and R-Shark.
+Every game's video is pixel-exact against MAME in simulation.
 
 The CPUs and sound chips use established cores: T80 (Daniel Wallner),
 fx68k (Jorge Cwik), and jt51, jt6295, jt03 and jt49 (Jose Tejada,
