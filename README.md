@@ -32,10 +32,29 @@ text layer) is new work, one renderer covering all ten games.
 
 ## Install
 
+### With Update All (recommended)
+
+Add these two lines to `/media/fat/downloader.ini` on your SD card:
+
+```ini
+[shmupfan]
+db_url = https://raw.githubusercontent.com/shmupfan/Distribution/main/db.json
+```
+
+Then run Update All (or `downloader`) from the Scripts menu. It installs the
+core and every MRA, including the alternative sets, and keeps them up to
+date on later runs. The same entry also brings in other
+[shmupfan](https://github.com/shmupfan/Distribution) cores as they are
+released.
+
+### Manually
+
 Copy `releases/Arcade-Dooyong_*.rbf` to `/media/fat/_Arcade/cores/` and
 the MRA files in `releases/` to `/media/fat/_Arcade/`. Alternative sets
 are in `releases/_alternatives/` and go to
 `/media/fat/_Arcade/_alternatives/`.
+
+### ROMs
 
 You need the MAME ROM sets (0.288/0.289 naming) in
 `/media/fat/games/mame/`: `lastday.zip`, `gulfstrm.zip`, `pollux.zip`,
