@@ -11,8 +11,8 @@ Alternative versions live in `_alternatives/_<game>/` and are copied to
 
 | File | md5 | Notes |
 |------|-----|-------|
-| `Arcade-Dooyong_20261003.rbf` | `211c23913a474de03e9d4e9356ef3c4a` | Sound: two M6295 fixes (phrase end, start to a playing channel ignored) and YM2151 writes timed to the chip clock; docs/m3_findings.md section 6. Not yet tested on hardware. |
-| `Arcade-Dooyong_20260930.rbf` | `29d749eb7c4166184e12fde7f8eeccdf` | First release: all ten games, 25 sets. Replaced by 20261003 (in git history). |
+| `Arcade-Dooyong_20261004.rbf` | `feafc9e4066f203c5d04789f7bcf3be2` | M6295 BUSY timed as the datasheet, phrase end and start handling as MAME, YM2151 writes timed to the chip clock (docs/m3_findings.md); video sync keeps running (black) during the ROM download instead of stopping; HDMI scale options (docs/m4_findings.md section 6). |
+| `Arcade-Dooyong_20260930.rbf` | `29d749eb7c4166184e12fde7f8eeccdf` | First release: all ten games, 25 sets. Replaced by 20261004 (in git history). |
 
 Every released RBF passed, in order: frame replay against MAME for
 every game (video pixel-exact), full-system boots against MAME from

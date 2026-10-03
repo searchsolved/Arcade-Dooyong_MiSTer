@@ -96,3 +96,62 @@ first build had no keyboard handling (gamepads only), fixed in compile 4
 first build kept as `.bak`). On compile 4: "working perfectly, sound and
 controller, graphics look great." Blue Hawk and the open items (R13 sound
 divergence by ear, DIPs, long play) remain for M5 QA.
+
+## 6. Video during the ROM download, HDMI options, 20261004 release (2026-10-04)
+
+**Green screen at start.** Lee saw a solid green screen for about a
+second when the core starts (Pop Bingo, Pollux). dy_board held
+core_rst_n low through the ROM download and SDRAM init, which also reset
+the pixel enable and froze the video counters: no hsync or vsync for a
+second, shown by the MiSTer output as its no-signal state (likely cause,
+not confirmed on hardware; the board sim shows the missing sync).
+
+**Fix (dy_sys/dy_video parameter FREE_TIMING, set to 1 by dy_board).**
+The pixel enable and video counters run from the PLL lock and keep
+producing sync while the core is held in reset; RGB is 0 while the core
+is in reset. Once a frame, the pixel enable that would start the power-on
+line (248; 0 on the Primella family) reloads the counters and the pixel
+accumulator to their reset values instead, and dy_sys releases the core
+on the clock after such a reload, so the first running clock sees exactly
+the state of a plain reset release (MAME comparisons unchanged).
+FREE_TIMING = 0 (M1/M2 harness default) is the old logic.
+
+**Board A/B (same harness; base = before the fix, 601 frames, captures at
+frames 1-40 and every 25th, RAM dumps and write logs).**
+
+| Game | Capture files identical | Before the core runs (fix) |
+|---|---|---|
+| flytiger | 378 / 378 (also on the final RTL with jt6295 variant e) | 24 vsyncs, 0 lit pixels (base: 1 vsync) |
+| pollux | 378 / 378 | 24 vsyncs, 0 lit pixels |
+| popbingo | 378 / 378 | 24 vsyncs, 0 lit pixels |
+| sadari | 378 / 378 | 0 vsyncs, 0 lit pixels: the sim uses MAME's 256-line parity frame, which has no Primella vsync lines (the 260-line hardware frame does); hsync and DE run |
+
+Only the worst render line changes slightly (2,404 vs 2,413 clocks on
+flytiger), since the SDRAM refresh phase relative to the core start
+differs; no overruns.
+
+**M2 against MAME with jt6295 variant e** (requested for the two games
+last verified with the MAME-timed jt6295), 3,001 frames from power-on:
+- sadari: YM2151 20,829 and M6295 76 events identical to MAME; 81 images
+  exact plus 19 explained by live reads, 0 unexplained; 200 RAM dump
+  files match.
+- popbingo: YM2151 32,115, M6295 41,975 and sound ROM 42,598 events
+  identical to MAME. 1 to 2 bytes of live sprite RAM differ from vblank 60
+  on (27 images); the same differences appear line for line in the
+  previous run with the a+b jt6295 (build/m2/oki_fix2, up to vblank
+  2,790), and every RAM dump to frame 2,800 is byte-identical between the
+  two runs, so variant e does not change it. It predates the OKI work
+  (68000 class, m68k_findings).
+
+**HDMI options (shell only).** video_freak supplies VIDEO_ARX/ARY:
+Aspect ratio as before and Scale (Normal, V-Integer, Narrower
+HV-Integer, Wider HV-Integer). No 216p crop: the Dooyong pictures are
+240 lines (256 on the Primella family). The shell lints clean with the
+framework stubs.
+
+**Release build** builds/20261004_0035_Arcade-Dooyong.rbf =
+releases/Arcade-Dooyong_20261004.rbf, md5
+feafc9e4066f203c5d04789f7bcf3be2: every clock non-negative (core 96 MHz
+setup +0.878 / hold +0.253 ns, HDMI setup +0.222 / hold +0.177 ns,
+recovery and removal positive), 55% ALMs, 90% RAM blocks. Not yet tested
+on hardware.
