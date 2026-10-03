@@ -56,6 +56,7 @@ localparam CONF_STR = {
 	"H0OMN,Aspect ratio,Original,Full Screen,[ARC1],[ARC2];",
 	"H0O2,Orientation,Vertical,Horizontal;",
 	"O35,Scandoubler Fx,None,HQ2x,CRT 25%,CRT 50%,CRT 75%;",
+	"H0O[13:12],Scale,Normal,V-Integer,Narrower HV-Integer,Wider HV-Integer;",
 	"-;",
 	"DIP;",
 	"-;",
@@ -204,8 +205,13 @@ wire rotate_ccw = 1'b1;
 wire flip       = 1'b0;
 
 wire [1:0] ar = status[23:22];
-assign VIDEO_ARX = (!ar) ? ((no_rotate) ? 13'd4 : 13'd3) : (ar - 1'd1);
-assign VIDEO_ARY = (!ar) ? ((no_rotate) ? 13'd3 : 13'd4) : 12'd0;
+
+// HDMI options through the framework's video_freak (as the Hyper Duel core):
+// aspect and integer scale, rotated or not. No vertical crop option: the
+// Dooyong pictures are 240 lines (256 on the Primella family), not the
+// 224 lines a 216p (5x on 1080p) crop is meant for.
+wire [1:0] scale = status[13:12];
+wire       vga_de_mix;
 
 // The core's video outputs change once every 12 clk_sys clocks (8 MHz),
 // i.e. every 6 clk_vid clocks; re-registered here and sampled once per
@@ -233,7 +239,25 @@ arcade_video #(.WIDTH(384), .DW(24)) arcade_video (
 	.VBlank(vbl_v),
 	.HSync(hs_v),
 	.VSync(vs_v),
-	.fx(status[5:3])
+	.fx(status[5:3]),
+	.VGA_DE(vga_de_mix)
+);
+
+video_freak video_freak (
+	.CLK_VIDEO(CLK_VIDEO),
+	.CE_PIXEL(CE_PIXEL),
+	.VGA_VS(VGA_VS),
+	.HDMI_WIDTH(HDMI_WIDTH),
+	.HDMI_HEIGHT(HDMI_HEIGHT),
+	.VGA_DE(VGA_DE),
+	.VIDEO_ARX(VIDEO_ARX),
+	.VIDEO_ARY(VIDEO_ARY),
+	.VGA_DE_IN(vga_de_mix),
+	.ARX((!ar) ? ((no_rotate) ? 12'd4 : 12'd3) : {10'd0, ar - 2'd1}),
+	.ARY((!ar) ? ((no_rotate) ? 12'd3 : 12'd4) : 12'd0),
+	.CROP_SIZE(12'd0),
+	.CROP_OFF(5'd0),
+	.SCALE({1'b0, scale})
 );
 
 // ---------------------------------------------------------------------------

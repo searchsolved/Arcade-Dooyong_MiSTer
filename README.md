@@ -70,8 +70,8 @@ Left Ctrl, Left Alt or Space, Left Shift, 1/2 start, 5/6 coin, 9
 service; player 2 on R/F/D/G, A, S, Q).
 
 OSD: DIP switches per game (from the MAME driver), aspect ratio,
-orientation for the vertical games, and the standard scandoubler
-options.
+orientation for the vertical games, the standard scandoubler options, and
+HDMI scale (Normal, V-Integer, Narrower or Wider HV-Integer).
 
 ## Accuracy notes
 
