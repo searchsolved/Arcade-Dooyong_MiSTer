@@ -50,11 +50,20 @@ module dy_video #(
     // fractional pixel enable); hardware uses 260 at an exact 8 MHz pixel
     // clock = 60.10 Hz (spec 5.3: PCB 15.68 kHz / 60 Hz suggests ~261; R1).
     // The extra lines are added after line 255, inside vblank.
-    parameter int V_TOTAL = 256
+    parameter int V_TOTAL = 256,
+    // 1 (MiSTer board): the video counters run from power-on and keep sync
+    // going while the core is held in reset (ROM download, SDRAM init), with
+    // black RGB; i_tim_rst reloads their power-on state once a frame and the
+    // system releases its reset on the clock after that reload (dy_sys), so
+    // the core starts at exactly the beam position of a reset release.
+    // 0 (simulation default): counters reset with rst_n, as verified in M1/M2.
+    parameter bit FREE_TIMING = 1'b0
 ) (
     input  logic        clk,
     input  logic        rst_n,
     input  logic        ce_pix,
+    input  logic        i_tim_rst,     // FREE_TIMING: synchronous counter reload
+    output logic        o_tim_evt,     // FREE_TIMING: the next pixel starts the power-on line
     input  logic [3:0]  i_game,
 
     // CPU side, already decoded by the system (M2); byte wide
@@ -120,10 +129,15 @@ module dy_video #(
   // at 0 instead, every CPU runs 8 lines late against the video from reset
   // (m3_findings 2 took this for a MAME timestamp artefact; the main CPU's
   // early writes and the stacked IRQ return addresses showed it is real).
+  wire [8:0] v_pwr   = is_primella(i_game) ? 9'd0 : 9'd248;
+  wire       tim_rst = FREE_TIMING ? i_tim_rst : !rst_n;
+  // the pixel enable that ends line v_pwr - 1 (power-on line follows)
+  assign o_tim_evt = ce_pix && hcnt == 9'd511 &&
+                     ((vfull == 9'(V_TOTAL - 1)) ? 9'd0 : vfull + 9'd1) == v_pwr;
   always_ff @(posedge clk) begin
-    if (!rst_n) begin
+    if (tim_rst) begin
       hcnt  <= '0;
-      vfull <= is_primella(i_game) ? 9'd0 : 9'd248;
+      vfull <= v_pwr;
     end else if (ce_pix) begin
       hcnt <= hcnt + 9'd1;
       if (hcnt == 9'd511) vfull <= (vfull == 9'(V_TOTAL - 1)) ? 9'd0 : vfull + 9'd1;
@@ -666,7 +680,9 @@ module dy_video #(
       o_hs     <= s2_hs;
       o_vs     <= s2_vs;
       o_pen    <= {!s2_px[11], s2_px[10:0]};
-      {o_r, o_g, o_b} <= (s2_de && s2_px[11]) ? to_rgb(pal_vq, cfg.pal_444) : 24'd0;
+      // black while the core is held in reset (FREE_TIMING keeps sync running)
+      {o_r, o_g, o_b} <= (s2_de && s2_px[11] && (rst_n || !FREE_TIMING))
+                         ? to_rgb(pal_vq, cfg.pal_444) : 24'd0;
     end
   end
 

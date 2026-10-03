@@ -37,10 +37,14 @@ module dy_sys #(
     parameter int CLK_HZ  = 96000000,
     parameter int V_TOTAL = 256,           // dy_video lines per frame
     parameter int PIX_NUM = 786432,        // 7,864,320 / 10
-    parameter int PIX_DEN = 9600000        // 96,000,000 / 10
+    parameter int PIX_DEN = 9600000,       // 96,000,000 / 10
+    // 1 on the MiSTer board: video timing runs from i_pwr_rst_n and keeps
+    // sync during the core reset (dy_video FREE_TIMING); 0 = M1/M2 behaviour
+    parameter bit FREE_TIMING = 1'b0
 ) (
     input  logic        clk,
-    input  logic        rst_n,
+    input  logic        rst_n,          // core reset request (active low)
+    input  logic        i_pwr_rst_n,    // FREE_TIMING: power-on reset of the video timing
     input  logic [3:0]  i_game,
 
     // program ROM download: 0x00000-0x3FFFF main CPU, 0x40000-0x4FFFF sound CPU
@@ -96,20 +100,43 @@ module dy_sys #(
 
   import dy_pkg::*;
 
+  // ================================================================ reset
+  // FREE_TIMING: the video counters and the pixel enable run from power-on;
+  // tim_evt (dy_video) marks the pixel enable that would start the power-on
+  // line, and while the core is in reset that enable reloads the counters
+  // and the pixel accumulator to their reset values instead. The core reset
+  // is released on the clock after such a reload (tim_fresh), so the first
+  // clock of the running core sees exactly the state a plain reset release
+  // gives (M1/M2 verified) and the CPUs start at MAME's beam position.
+  logic tim_evt, tim_fresh, run_q;
+  logic crst_n;
+  wire  tim_load = FREE_TIMING && !crst_n && tim_evt;
+  wire  tim_rst  = FREE_TIMING ? (!i_pwr_rst_n || tim_load) : !rst_n;
+  assign crst_n  = FREE_TIMING ? (rst_n && i_pwr_rst_n && (run_q || tim_fresh)) : rst_n;
+  always_ff @(posedge clk) begin
+    tim_fresh <= tim_rst;
+    run_q     <= crst_n;
+  end
+
   // ================================================================ enables
   logic [4:0]  cpu_cnt;
   logic        ce_cpu;
   logic        ce_pix /* verilator public_flat_rd */;
   logic [23:0] pix_acc;
   always_ff @(posedge clk) begin
-    if (!rst_n) begin
+    if (!crst_n) begin
       cpu_cnt <= '0;
       ce_cpu  <= 1'b0;
-      ce_pix  <= 1'b0;
-      pix_acc <= '0;
     end else begin
       ce_cpu  <= (cpu_cnt == 5'd0);
       cpu_cnt <= (cpu_cnt == 5'(CPU_DIV - 1)) ? 5'd0 : cpu_cnt + 5'd1;
+    end
+  end
+  always_ff @(posedge clk) begin
+    if (tim_rst) begin
+      ce_pix  <= 1'b0;
+      pix_acc <= '0;
+    end else begin
       if (pix_acc + 24'(PIX_NUM) >= 24'(PIX_DEN)) begin
         pix_acc <= pix_acc + 24'(PIX_NUM) - 24'(PIX_DEN);
         ce_pix  <= 1'b1;
@@ -131,7 +158,7 @@ module dy_sys #(
   wire m68k = is_m68k(i_game);
 
   T80s u_cpu (
-    .RESET_n(rst_n && !m68k), .CLK(clk), .CEN(ce_cpu),
+    .RESET_n(crst_n && !m68k), .CLK(clk), .CEN(ce_cpu),
     .WAIT_n(1'b1), .INT_n(int_n), .NMI_n(1'b1), .BUSRQ_n(1'b1), .OUT0(1'b0),
     .DI(cpu_din),
     .M1_n(m1_n), .MREQ_n(mreq_n), .IORQ_n(iorq_n), .RD_n(rd_n), .WR_n(wr_n),
@@ -143,7 +170,7 @@ module dy_sys #(
   wire int_ack = !m1_n && !iorq_n;
   logic vbl_irq;
   always_ff @(posedge clk) begin
-    if (!rst_n)       int_n <= 1'b1;
+    if (!crst_n)       int_n <= 1'b1;
     else if (vbl_irq) int_n <= 1'b0;
     else if (int_ack) int_n <= 1'b1;
   end
@@ -400,7 +427,7 @@ module dy_sys #(
 
   always_ff @(posedge clk) begin
     o_snd_latch_we <= 1'b0;
-    if (!rst_n) begin
+    if (!crst_n) begin
       bank             <= 3'd0;
       ctrl             <= 8'd0;
       o_snd_latch      <= 8'd0;
@@ -438,7 +465,7 @@ module dy_sys #(
   always_ff @(posedge clk) begin
     en_phi1 <= 1'b0;
     en_phi2 <= 1'b0;
-    if (!rst_n || !m68k) begin
+    if (!crst_n || !m68k) begin
       m_acc <= '0;
       m_ph  <= 1'b0;
     end else if (m_acc + m_step >= 28'(CLK_HZ)) begin
@@ -454,7 +481,7 @@ module dy_sys #(
   logic [2:0]  m_ipl;
   fx68k u_m68k (
     .clk(clk), .HALTn(1'b1),
-    .extReset(!rst_n || !m68k), .pwrUp(!rst_n || !m68k),
+    .extReset(!crst_n || !m68k), .pwrUp(!crst_n || !m68k),
     .enPhi1(en_phi1), .enPhi2(en_phi2),
     .eRWn(m_rw), .ASn(m_asn), .LDSn(m_ldsn), .UDSn(m_udsn),
     .E(), .VMAn(),
@@ -471,7 +498,7 @@ module dy_sys #(
   logic irq5_p, irq6_p;
   logic irq6_line;
   always_ff @(posedge clk) begin
-    if (!rst_n || !m68k) begin
+    if (!crst_n || !m68k) begin
       irq5_p <= 1'b0;
       irq6_p <= 1'b0;
     end else begin
@@ -512,7 +539,7 @@ module dy_sys #(
   assign m_dtackn = !(mbst == MB_ACK);
   assign m_din    = m_rdata;
   always_ff @(posedge clk) begin
-    if (!rst_n || !m68k) begin
+    if (!crst_n || !m68k) begin
       mbst    <= MB_IDLE;
       m_wdone <= 1'b0;
     end else begin
@@ -568,8 +595,9 @@ module dy_sys #(
   wire [11:0] v_addr   = m68k ? m_ba[11:0] : ((sel == D_PAL) ? pal_a : A[11:0]);
   logic [7:0] pal_q, txt_q, spr_q;
 
-  dy_video #(.V_TOTAL(V_TOTAL)) u_video (
-    .clk(clk), .rst_n(rst_n), .ce_pix(ce_pix), .i_game(i_game),
+  dy_video #(.V_TOTAL(V_TOTAL), .FREE_TIMING(FREE_TIMING)) u_video (
+    .clk(clk), .rst_n(crst_n), .ce_pix(ce_pix), .i_game(i_game),
+    .i_tim_rst(tim_rst), .o_tim_evt(tim_evt),
     .i_cpu_addr(v_addr), .i_cpu_din(m68k ? m_dout : {8'h00, cpu_dout}), .i_cpu_be({~m_udsn, ~m_ldsn}),
     .i_pal_we(v_pal_we), .i_txt_we(v_txt_we), .i_spr_we(v_spr_we),
     .o_pal_dout(pal_q), .o_txt_dout(txt_q), .o_spr_dout(spr_q), .o_spr_dout16(m_spr_q16),
@@ -591,7 +619,7 @@ module dy_sys #(
   localparam int     VBL_PIX = int'((PIX_HZ * 25 + 5000) / 10000);
   logic [15:0] vbl_cnt;
   always_ff @(posedge clk) begin
-    if (!rst_n) begin
+    if (!crst_n) begin
       vbl_in  <= 1'b0;
       vbl_cnt <= '0;
     end else if (vbl_irq) begin
@@ -628,7 +656,7 @@ module dy_sys #(
   // (lastday) or 1.5 MHz, sound CPU 8 MHz on gulfstrm.
   dy_snd #(.CPU_DIV(2 * CPU_DIV), .YM_NUM(3579545), .YM4_NUM(4000000), .YM_DEN(CLK_HZ),
            .OKI_DIV(8 * CPU_DIV)) u_snd (
-    .clk(clk), .rst_n(rst_n), .i_ym_4m(is_pr || m68k),
+    .clk(clk), .rst_n(crst_n), .i_ym_4m(is_pr || m68k),
     .i_opn(is_ld || is_gp), .i_opn_map_ld(is_ld || is_gs), .i_opn_15(is_gp), .i_cpu_fast(is_gs),
     .i_dl_we(i_dl_we && i_dl_addr[18]), .i_dl_addr(i_dl_addr[15:0]), .i_dl_data(i_dl_data),
     .i_latch(o_snd_latch),

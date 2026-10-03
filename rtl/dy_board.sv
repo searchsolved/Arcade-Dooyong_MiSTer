@@ -117,9 +117,14 @@ module dy_board #(
   logic [7:0]  latch_unused;
   logic [15:0] d0, d1, d2, d3;
 
+  // FREE_TIMING: sync keeps running (black picture) during the ROM download
+  // and SDRAM init instead of stopping, so the MiSTer scaler never loses the
+  // signal (it showed a green "no input" screen for about a second); dy_sys
+  // releases the core on the timing's power-on phase, so the game starts as
+  // a plain reset release would.
   dy_sys #(.CPU_DIV(CPU_DIV), .CLK_HZ(CLK_HZ), .V_TOTAL(V_TOTAL),
-           .PIX_NUM(PIX_NUM), .PIX_DEN(PIX_DEN)) u_sys (
-    .clk(clk), .rst_n(core_rst_n), .i_game(game),
+           .PIX_NUM(PIX_NUM), .PIX_DEN(PIX_DEN), .FREE_TIMING(1'b1)) u_sys (
+    .clk(clk), .rst_n(core_rst_n), .i_pwr_rst_n(i_sdram_rst_n), .i_game(game),
     .i_dl_we(dl_main || dl_snd), .i_dl_addr(dl_baddr), .i_dl_data(i_ioctl_dout),
     .o_oki_addr(oki_addr), .i_oki_data(oki_data), .i_oki_ok(oki_ok),
     .o_audio(o_audio),

@@ -32,7 +32,8 @@ module tb_board #(
   wire [1:0]  BA;
   wire [15:0] DQ;
   wire        DQML, DQMH, nCS, nRAS, nCAS, nWE, CKE;
-  logic hb, vb, hs, vs;
+  logic hb, vb;
+  logic hs /* verilator public_flat_rd */, vs /* verilator public_flat_rd */;
   logic [3:0] game;
 
   dy_board #(.CPU_DIV(12), .CLK_HZ(96000000), .V_TOTAL(V_TOTAL),

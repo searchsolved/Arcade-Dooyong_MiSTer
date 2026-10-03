@@ -53,10 +53,23 @@ static uint32_t rd32(uint32_t a) {
     return v;
 }
 
+// Video-during-reset statistics (boot black-screen fix): phase 0 = before
+// the first vblank IRQ (download, SDRAM init, core reset), 2 = inside a reset
+// injected with +rereset=F; vsync rising edges and lit active pixels per phase.
+static int vphase = 0;
+static long vs_edges[3], lit_px[3], de_px[3];
+static bool vs_prev = false;
 static void tick() {
     top->clk = 0; top->eval();
     top->clk = 1; top->eval();
     cycles++;
+    bool vs = top->rootp->tb_board__DOT__vs;
+    if (vs && !vs_prev) vs_edges[vphase]++;
+    vs_prev = vs;
+    if (top->o_de && top->o_ce_pix) {
+        de_px[vphase]++;
+        if (top->o_r | top->o_g | top->o_b) lit_px[vphase]++;
+    }
 }
 
 static std::string plus(const char *name, const char *def) {
@@ -139,6 +152,9 @@ int main(int argc, char **argv) {
     fflush(stdout);
 
     auto *r = top->rootp;
+    long rereset_at = atol(plus("rereset", "0").c_str());
+    long rereset_len = atol(plus("rerlen", "4800000").c_str());   // 50 ms
+    bool rereset_done = false;
     long frame = 0;                                 // vblanks seen
     std::vector<uint8_t> px;
     px.reserve(384 * 240 * 5);
@@ -186,10 +202,24 @@ int main(int argc, char **argv) {
             px.push_back(top->o_pen & 0xFF);
             px.push_back(top->o_pen >> 8);
         }
+        if (rereset_at > 0 && frame == rereset_at && !rereset_done) {
+            rereset_done = true;
+            vphase = 2;
+            top->i_reset = 1;
+            for (long i = 0; i < rereset_len; i++) tick();
+            top->i_reset = 0;
+            printf("RERESET at vblank %ld for %ld clocks\n", frame, rereset_len);
+        }
         if (top->o_vbl_irq) {
+            if (vphase == 0)
+                printf("PRE-RUN clocks %llu vs_edges %ld de_px %ld lit_px %ld\n",
+                       (unsigned long long)cycles, vs_edges[0], de_px[0], lit_px[0]);
+            if (vphase == 2)
+                printf("IN-RESET vs_edges %ld de_px %ld lit_px %ld\n", vs_edges[2], de_px[2], lit_px[2]);
+            vphase = 1;
             // close displayed frame `frame` (pixels since the previous vblank)
             if (frame > 0 && cap.count(frame)) {
-                char fn[64];
+                char fn[512];
                 snprintf(fn, sizeof fn, "%s/%06ld.rgbp", out.c_str(), frame);
                 if (px.size() != frame_px * 5)
                     fprintf(stderr, "frame %ld: %zu pixels\n", frame, px.size() / 5);
@@ -208,7 +238,7 @@ int main(int argc, char **argv) {
             }
             if (cap.count(frame)) {
                 // RAM state at vblank N (MAME's frame notifier point)
-                char fn[64];
+                char fn[512];
                 std::vector<uint8_t> b;
                 b.resize(4096);
                 for (int i = 0; i < 2048; i++) {        // palette, CPU byte order (68000: big-endian)
