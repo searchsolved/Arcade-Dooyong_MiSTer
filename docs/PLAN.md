@@ -396,7 +396,7 @@ audio per variant; level calibration within 1 dB of MAME's mix.
 PASS (+0.17 / +0.29 dB), stream parity PARTIAL.** Register streams are
 identical for 47 s (flytiger) and 35 s (bluehawk), then the sound programs
 diverge on timing-sensitive decisions; sound CPU timing, YM timer period and
-M6295 status were each checked equal to MAME. New research item R13. 2026-10-03: unchanged by the jt6295 patches and the YM2151 write fix; the YM2151 busy flag is ruled out as a cause (m3_findings 6.2).
+M6295 status were each checked equal to MAME. New research item R13. 2026-10-03: unchanged by the jt6295 patches and the YM2151 write fix; the YM2151 busy flag is ruled out as a cause (m3_findings 6.2). 2026-10-03 later: explained. The divergence comes from a status read 8 us after a stop (frame 2,121): the MSM6295 datasheet (p. 73) says BUSY stays high until the next sample, so the read shows the channel busy (0xFB), where MAME shows it idle (0xFA); the sound program then takes a different path from frame 2,125. The core (jt6295 patch 3) follows the datasheet. Class: MAME wrong per datasheet (m3_findings 6.5). A MAME-timed status removes the divergence (equal to MAME past frame 2,400), which confirms the cause.
 Details in `docs/m3_findings.md`.
 
 ### M4. MiSTer shell, SDRAM, Quartus
@@ -457,7 +457,7 @@ Ordered by impact on the first two targets.
 | R10 | 68000 IRQ6 at line 120: source and exact line | T12 | Scope, or a game-behaviour test on hardware if a MiSTer build can vary it |
 | R11 | Primella cocktail mode and buttons 2/3; Pop Bingo unknown registers | T5, T6 | Manuals, operator sheets, board owners |
 | R12 | Do the boards latch tilemap scroll registers (and text/palette reads) at vblank? pollux and the 68000 games write scroll mid-frame every frame (68000: lines 120-135) | spec 5.4, O10, O11 | Recordings of superx/rshark/popbingo during scrolling (a tear near line 123 would mean no latch); pollux scrolling scenes |
-| R17 | M6295 phrase end (does the chip play the second nibble of the stop byte?), a start command to a channel that is still playing (ignored or restart?), and how soon a stop shows in the status register | m3_findings 6 | OKI MSM6295 datasheet text on the phrase table stop address and on busy channels; a board test sending a start to a busy channel; recordings of games that re-send starts |
+| R17 | M6295 phrase end (does the chip play the second nibble of the stop byte?), a start command to a channel that is still playing (ignored or restart?), and how soon a stop shows in the status register | m3_findings 6 | OKI MSM6295 datasheet text on the phrase table stop address and on busy channels; a board test sending a start to a busy channel; recordings of games that re-send starts ; 2026-10-03: MSM6295 datasheet found (later edition, p. 73): BUSY timing after start and stop settled and implemented (jt6295 patch 3, m3_findings 6.5); start to a playing channel and a restart within one sample of a stop are not covered and follow MAME |
 
 Community route: the forum post drafted on 2026-09-27 (memory note
 `dooyong_mister_core.md`) can ask board owners for R1-R4 recordings.

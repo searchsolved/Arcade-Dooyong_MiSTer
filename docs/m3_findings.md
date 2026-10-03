@@ -191,3 +191,50 @@ morning did not run: the PC crashed a minute after Quartus started
 (Kernel-Power 41), the known instability; a compile at 11:32 with the
 jt6295 patches only (no YM2151 change) also met timing (+0.472 ns) and was
 superseded.
+
+### 6.5 jt6295 patch 3: BUSY as the datasheet (2026-10-03, R17, R13)
+
+Section 6.3 left a stop/start fix open. It is now in
+(rtl/vendor/SOUND_PROVENANCE.md, patch 3; the same jt6295 files as the
+1945k III, Tecmo 16 and Hyper Duel cores): the status read (BUSY) is timed as the MSM6295 datasheet
+(p. 73: "BUSY becomes "H" after 15 x n clock" from a start's second
+byte; after a stop, "voice playback stops all the next sample and BUSY
+becomes "L""); whether a start is accepted follows MAME's per-voice
+"playing" flag, since the datasheet does not cover a start to a playing
+channel or a restart within one sample of a stop; a start's first byte no
+longer clears pending stops; a stop cancels a queued start for its
+channel; the ADPCM decoder resets on every start.
+
+Two versions were run here (dy_sys harness, recipe of 6.1; compared with
+MAME by `m3/compare_snd.py`; scripts `sim/build/m2/fixd_runs.sh`,
+`fixe_runs.sh`):
+
+| Game | MAME-timed status (tried, not kept) | Datasheet-timed status (kept) |
+|---|---|---|
+| bluehawk | YM2151 13,274, M6295 1,491, sound ROM 28,210 events identical to MAME to frame 2,400 | first difference frame 2,121 (status read 0xFB, MAME 0xFA, 8 us after a stop); M6295 first mismatch frame 2,125, event 1,455, as in 6.1 |
+| flytiger | identical to MAME to frame 2,400 | identical to MAME to frame 1,200 |
+| sadari | identical to MAME to frame 2,400 | not re-run |
+| popbingo | identical to MAME to frame 2,400 | not re-run |
+
+R13 explained: at frame 2,121 the driver stops channel 0 and reads the
+status 8 us later. The datasheet says BUSY stays high until the next
+sample (up to 132 us), so the real chip almost certainly answers busy
+(0xFB) there, as the core does; MAME answers idle at once. The driver
+then remembers channel 0 as busy and, at frame 2,125, stops it again
+before restarting it, where MAME restarts it directly. Class: MAME wrong
+per datasheet. The MAME-timed version, which removes the divergence,
+confirms that this read is the whole cause. Whether a given read lands
+before the sample point depends on the chip's sample phase, so a real
+board may take either path at that frame.
+
+| Game | Result against MAME | Class |
+|---|---|---|
+| Blue Hawk (Dooyong) | first difference frame 2,121: a status read 8 us after a stop returns 0xFB (busy), MAME 0xFA; the program then differs from frame 2,125 (the old R13 point) | MAME wrong per datasheet |
+| Flying Tiger (Dooyong) | identical to MAME (to frame 1,200) | none |
+| Sadari, Pop Bingo (Dooyong) | identical to MAME with the MAME-timed version (to frame 2,400); not re-run with the datasheet timing | not measured |
+| Ganbare Ginkun (Tecmo 16) | commands identical in order and value; M6295 writes up to 280 us later (its fade polls wait for the real BUSY); level -0.01 dB, correlation 0.999 | MAME wrong per datasheet, timing only |
+| Final Star Force play (Tecmo 16) | M6295 writes up to 99 us later; level -0.02 dB | MAME wrong per datasheet, timing only |
+| 1945k III, Solite Spirits, '96 Flag Rally | output and I/O identical to the previous build (1945k III 2,001 frames, Solite Spirits 4,001, Flag Rally 2,001) | none |
+| Hyper Duel, Magical Error | the games never read the status; MAME's OKI streams replayed through the chip: level within 0.004 dB | none |
+
+Not built: a video change is being added first, then one build.

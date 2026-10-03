@@ -62,3 +62,21 @@ updates under `cen`), and the one-clock chip select hit it about once in 50
 writes. Writes are now held until the next `cen_p1`, so status reads see
 busy after a data write as on the chip. jt03 (YM2203) sets busy on any
 write and needed no change.
+
+Patch 3 (2026-10-03, R17, `jt6295_ctrl.v`, `jt6295_serial.v`,
+`jt6295.v`): the status read (BUSY) is timed as the MSM6295 datasheet
+(p. 73: "BUSY becomes "H" after 15 x n clock" from a start's second
+byte; after a stop, "voice playback stops all the next sample and BUSY
+becomes "L""); whether a start is accepted follows MAME's per-voice
+"playing" flag, since the datasheet does not cover a start to a playing
+channel or a restart within one sample of a stop; a start's first byte no
+longer clears pending stops; a stop cancels a queued start for its
+channel; the ADPCM decoder resets on every start. This replaces the Tecmo 16 core's earlier patch
+3 that this core did not take (above). The datasheet (MSM6295, later
+edition, p. 73) was read by two people and outranks MAME here; MAME
+decides what it leaves open. Verification: docs/m3_findings.md 6.5. The patched files are identical in four cores (1945k III, Tecmo 16,
+Dooyong, Hyper Duel): hdl/jt6295.v md5 5ac531e429298723ae48a064551b9685,
+hdl/jt6295_ctrl.v 3c275bd9d77dc5dbc89eea5d4a277aa5, hdl/jt6295_serial.v
+5523e7c4708b29324ed409d16cad92a2. Full description, datasheet quotes and
+per-game results: `1945kiii-mister/rtl/vendor/jt6295/PROVENANCE.md`
+(patch 3).

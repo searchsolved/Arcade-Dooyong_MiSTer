@@ -33,10 +33,12 @@ power-on state; `rtl/vendor/t80/PROVENANCE.md`); fx68k carries the
 Verilator portability patches from the Hyper Duel core
 (`rtl/vendor/fx68k/PROVENANCE.md`); jt51 has a simulation-only timer
 option; jt6295 carries Hyper Duel's Quartus RAM-inference workaround and
-simulation-only Verilator annotations, neither changing behaviour, plus two
+simulation-only Verilator annotations, neither changing behaviour, plus three
 behaviour fixes that match MAME's M6295 model: a phrase plays through the
-second nibble of its stop byte, and a start command to a channel that is
-still playing is ignored (`rtl/vendor/SOUND_PROVENANCE.md`). jt03 and jt49
+second nibble of its stop byte, a start command to a channel that is still
+playing is ignored, and the busy status is timed as the MSM6295 datasheet
+describes, with a decoder reset on every start
+(`rtl/vendor/SOUND_PROVENANCE.md`). jt03 and jt49
 are unmodified; jt51 is unmodified, with its write timing fixed in the
 core's sound glue.
 
