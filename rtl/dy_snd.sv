@@ -195,9 +195,29 @@ module dy_snd #(
   // ================================================================ chips
   logic [7:0] ym_dout, oki_dout;
   logic signed [15:0] ym_xl, ym_xr;
+  // A Z80 write reaches jt51 on the next cen_p1 clock (fix ported from the
+  // Tecmo 16 core, docs/m3_findings.md section 6). jt51 takes register
+  // writes on any clock but sets its busy flag only for a write that
+  // coincides with cen_p1 (jt51_mmr: busy updates under cen); a one-clock
+  // strobe hit cen_p1 about once in 50 writes, so the status read after a
+  // data write showed "not busy" where the chip (and MAME's ymfm) shows
+  // busy, and busy-wait loops ran short. Holding the write until cen_p1
+  // moves the register update by at most one P1 period (about 0.5 us).
+  // jt03 (YM2203) sets busy on any write and needs no change.
+  logic       ym_wpend;
+  logic       ym_wa0;
+  logic [7:0] ym_wd;
+  always_ff @(posedge clk) begin
+    if (!rst_n) ym_wpend <= 1'b0;
+    else if (wr && s_ym) begin
+      ym_wpend <= 1'b1;
+      ym_wa0   <= A[0];
+      ym_wd    <= dout;
+    end else if (ym_cen_p1) ym_wpend <= 1'b0;
+  end
   jt51 u_ym (
     .rst(!rst_n), .clk(clk), .cen(ym_cen), .cen_p1(ym_cen_p1),
-    .cs_n(!(wr && s_ym)), .wr_n(1'b0), .a0(A[0]), .din(dout),
+    .cs_n(!(ym_wpend && ym_cen_p1)), .wr_n(1'b0), .a0(ym_wa0), .din(ym_wd),
     .dout(ym_dout),
     .ct1(), .ct2(), .irq_n(ym_irq_n),
     .sample(), .left(), .right(), .xleft(ym_xl), .xright(ym_xr));
